@@ -27,6 +27,7 @@ def download_model():
             os.remove(MODEL_PATH)
         return False
 
+print("Starting model download check...", flush=True)
 MODEL_READY = download_model()
 
 # ── Conditionally load detector ───────────────────────────────────────────────
