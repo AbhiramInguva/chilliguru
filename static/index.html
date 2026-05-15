@@ -1,0 +1,1077 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ChilliGuru — Chilli Farming Expert</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;0,600;0,700;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --red:      #c0392b;
+    --red-dark: #922b21;
+    --red-soft: #f9e8e7;
+    --green:    #2d6a4f;
+    --green-lt: #52b788;
+    --green-bg: #f0f7f4;
+    --earth:    #8b5e3c;
+    --cream:    #fdf6ec;
+    --sand:     #f5e6c8;
+    --text:     #1a1a1a;
+    --text-lt:  #666;
+    --border:   #e8ddd0;
+    --white:    #ffffff;
+    --shadow:   0 4px 24px rgba(0,0,0,0.08);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--cream);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ───────────────────────────────────────────────────────────── */
+  header {
+    background: var(--white);
+    border-bottom: 1px solid var(--border);
+    padding: 0 32px;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.05);
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .logo-icon {
+    width: 36px;
+    height: 36px;
+    background: var(--red);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+  }
+
+  .logo-text {
+    font-family: 'Fraunces', serif;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--red-dark);
+    letter-spacing: -0.5px;
+  }
+
+  .logo-sub {
+    font-size: 11px;
+    color: var(--text-lt);
+    font-weight: 400;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  .header-pills {
+    display: flex;
+    gap: 8px;
+  }
+
+  .pill {
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    color: var(--text-lt);
+    background: var(--white);
+  }
+
+  .pill.active {
+    background: var(--green-bg);
+    border-color: var(--green-lt);
+    color: var(--green);
+  }
+
+  /* ── Layout ───────────────────────────────────────────────────────────── */
+  .layout {
+    display: grid;
+    grid-template-columns: 280px 1fr 260px;
+    flex: 1;
+    height: calc(100vh - 64px);
+    overflow: hidden;
+  }
+
+  /* ── Left Sidebar ─────────────────────────────────────────────────────── */
+  .sidebar-left {
+    background: var(--white);
+    border-right: 1px solid var(--border);
+    padding: 24px 20px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  .sidebar-section h3 {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-lt);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+  }
+
+  .quick-btn {
+    width: 100%;
+    text-align: left;
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--white);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    color: var(--text);
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-bottom: 6px;
+    line-height: 1.4;
+  }
+
+  .quick-btn:hover {
+    background: var(--green-bg);
+    border-color: var(--green-lt);
+    color: var(--green);
+    transform: translateX(2px);
+  }
+
+  .quick-btn .btn-icon {
+    font-size: 16px;
+    margin-right: 8px;
+  }
+
+  .lang-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .lang-btn {
+    padding: 8px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--white);
+    font-size: 12px;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.15s;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  .lang-btn:hover, .lang-btn.active {
+    background: var(--sand);
+    border-color: var(--earth);
+    color: var(--earth);
+  }
+
+  .pest-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--green-bg);
+    border: 1px solid #b7e4c7;
+    font-size: 12px;
+    color: var(--green);
+    margin-bottom: 6px;
+  }
+
+  .pest-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green-lt);
+    flex-shrink: 0;
+  }
+
+  /* ── Main Chat Area ───────────────────────────────────────────────────── */
+  .chat-area {
+    display: flex;
+    flex-direction: column;
+    background: var(--cream);
+    overflow: hidden;
+  }
+
+  .chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 32px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    scroll-behavior: smooth;
+  }
+
+  /* ── Welcome State ────────────────────────────────────────────────────── */
+  .welcome {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    text-align: center;
+    padding: 40px;
+    gap: 16px;
+  }
+
+  .welcome-icon {
+    font-size: 56px;
+    animation: float 3s ease-in-out infinite;
+  }
+
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50%       { transform: translateY(-8px); }
+  }
+
+  .welcome h2 {
+    font-family: 'Fraunces', serif;
+    font-size: 32px;
+    font-weight: 700;
+    color: var(--red-dark);
+    line-height: 1.2;
+  }
+
+  .welcome p {
+    font-size: 16px;
+    color: var(--text-lt);
+    max-width: 420px;
+    line-height: 1.6;
+  }
+
+  .welcome-cards {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+    margin-top: 8px;
+    max-width: 520px;
+    width: 100%;
+  }
+
+  .welcome-card {
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .welcome-card:hover {
+    border-color: var(--red);
+    box-shadow: 0 4px 16px rgba(192,57,43,0.1);
+    transform: translateY(-2px);
+  }
+
+  .welcome-card .wc-icon { font-size: 20px; margin-bottom: 6px; }
+  .welcome-card .wc-title { font-size: 13px; font-weight: 500; color: var(--text); }
+  .welcome-card .wc-desc  { font-size: 11px; color: var(--text-lt); margin-top: 2px; }
+
+  /* ── Messages ─────────────────────────────────────────────────────────── */
+  .message {
+    display: flex;
+    gap: 12px;
+    animation: msgIn 0.3s ease;
+  }
+
+  @keyframes msgIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .message.user {
+    flex-direction: row-reverse;
+  }
+
+  .avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    flex-shrink: 0;
+  }
+
+  .avatar.bot { background: var(--red); }
+  .avatar.user-av { background: var(--green); color: white; font-size: 13px; font-weight: 600; }
+
+  .bubble {
+    max-width: 72%;
+    padding: 14px 18px;
+    border-radius: 18px;
+    font-size: 14px;
+    line-height: 1.6;
+    position: relative;
+  }
+
+  .message.bot .bubble {
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: 4px 18px 18px 18px;
+    box-shadow: var(--shadow);
+  }
+
+  .message.user .bubble {
+    background: var(--red);
+    color: white;
+    border-radius: 18px 4px 18px 18px;
+  }
+
+  .bubble-name {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--red);
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  /* Detection badge inside bubble */
+  .detection-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--red-soft);
+    border: 1px solid #f1948a;
+    border-radius: 20px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--red-dark);
+    margin-bottom: 10px;
+  }
+
+  /* Solution cards */
+  .solution-card {
+    background: var(--green-bg);
+    border: 1px solid #b7e4c7;
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-top: 10px;
+    font-size: 13px;
+  }
+
+  .solution-card .sol-title {
+    font-weight: 600;
+    color: var(--green);
+    margin-bottom: 6px;
+    font-size: 13px;
+  }
+
+  .sol-metrics {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+
+  .sol-metric {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-lt);
+  }
+
+  /* Typing indicator */
+  .typing {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    padding: 14px 18px;
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: 4px 18px 18px 18px;
+    width: fit-content;
+    box-shadow: var(--shadow);
+  }
+
+  .typing span {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-lt);
+    animation: bounce 1.2s infinite;
+  }
+
+  .typing span:nth-child(2) { animation-delay: 0.2s; }
+  .typing span:nth-child(3) { animation-delay: 0.4s; }
+
+  @keyframes bounce {
+    0%, 60%, 100% { transform: translateY(0); }
+    30%           { transform: translateY(-6px); }
+  }
+
+  /* ── Input Area ───────────────────────────────────────────────────────── */
+  .input-area {
+    padding: 20px 40px 28px;
+    background: var(--cream);
+    border-top: 1px solid var(--border);
+  }
+
+  .input-box {
+    background: var(--white);
+    border: 1.5px solid var(--border);
+    border-radius: 16px;
+    padding: 14px 16px;
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+    transition: border-color 0.2s;
+    box-shadow: var(--shadow);
+  }
+
+  .input-box:focus-within {
+    border-color: var(--red);
+    box-shadow: 0 4px 24px rgba(192,57,43,0.12);
+  }
+
+  textarea {
+    flex: 1;
+    border: none;
+    outline: none;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 14px;
+    color: var(--text);
+    background: transparent;
+    resize: none;
+    max-height: 120px;
+    min-height: 24px;
+    line-height: 1.5;
+  }
+
+  textarea::placeholder { color: #bbb; }
+
+  .input-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .img-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    border: 1.5px dashed var(--border);
+    background: transparent;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    transition: all 0.15s;
+    color: var(--text-lt);
+  }
+
+  .img-btn:hover {
+    border-color: var(--green-lt);
+    background: var(--green-bg);
+    color: var(--green);
+  }
+
+  .send-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    border: none;
+    background: var(--red);
+    color: white;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+
+  .send-btn:hover { background: var(--red-dark); transform: scale(1.05); }
+  .send-btn:disabled { background: #ddd; cursor: not-allowed; transform: none; }
+
+  .input-hint {
+    font-size: 11px;
+    color: var(--text-lt);
+    margin-top: 8px;
+    text-align: center;
+  }
+
+  /* Image preview */
+  .image-preview {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--sand);
+    border-radius: 10px;
+    margin-bottom: 10px;
+    font-size: 12px;
+    color: var(--earth);
+  }
+
+  .image-preview.show { display: flex; }
+
+  .preview-img {
+    width: 40px;
+    height: 40px;
+    border-radius: 6px;
+    object-fit: cover;
+  }
+
+  .remove-img {
+    margin-left: auto;
+    cursor: pointer;
+    font-size: 16px;
+    color: var(--text-lt);
+  }
+
+  /* ── Right Sidebar ────────────────────────────────────────────────────── */
+  .sidebar-right {
+    background: var(--white);
+    border-left: 1px solid var(--border);
+    padding: 24px 20px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .info-card {
+    background: var(--cream);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+  }
+
+  .info-card h4 {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-lt);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+  }
+
+  .season-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+
+  .season-item:last-child { border-bottom: none; }
+  .season-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  .variety-chip {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 20px;
+    background: var(--sand);
+    border: 1px solid #d4a96a;
+    font-size: 11px;
+    color: var(--earth);
+    margin: 3px;
+    font-weight: 500;
+  }
+
+  .accuracy-bar {
+    margin-top: 4px;
+  }
+
+  .acc-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    margin-bottom: 6px;
+    color: var(--text-lt);
+  }
+
+  .acc-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    flex: 1;
+    margin: 0 8px;
+    overflow: hidden;
+  }
+
+  .acc-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--green-lt);
+  }
+
+  /* ── Hidden file input ────────────────────────────────────────────────── */
+  #fileInput { display: none; }
+
+  /* ── Scrollbar ────────────────────────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* ── Responsive ───────────────────────────────────────────────────────── */
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    .sidebar-left, .sidebar-right { display: none; }
+    .chat-messages { padding: 20px 16px; }
+    .input-area { padding: 12px 16px 20px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="logo">
+    <div class="logo-icon">🌶️</div>
+    <div>
+      <div class="logo-text">ChilliGuru</div>
+      <div class="logo-sub">Andhra & Telangana</div>
+    </div>
+  </div>
+  <div class="header-pills">
+    <div class="pill active">🟢 Online</div>
+    <div class="pill">Organic Only</div>
+    <div class="pill">EN / తె / हि</div>
+  </div>
+</header>
+
+<div class="layout">
+
+  <!-- Left Sidebar -->
+  <aside class="sidebar-left">
+
+    <div class="sidebar-section">
+      <h3>Quick Ask</h3>
+      <button class="quick-btn" onclick="askQuestion('My chilli leaves are curling upward. What should I do?')">
+        <span class="btn-icon">🍃</span>Leaves curling up
+      </button>
+      <button class="quick-btn" onclick="askQuestion('I see holes in my chilli fruit. What pest is this?')">
+        <span class="btn-icon">🌶️</span>Holes in fruit
+      </button>
+      <button class="quick-btn" onclick="askQuestion('White powder on my chilli leaves. How to treat organically?')">
+        <span class="btn-icon">🤍</span>White powder on leaves
+      </button>
+      <button class="quick-btn" onclick="askQuestion('My chilli flowers are dropping. What is the reason?')">
+        <span class="btn-icon">🌸</span>Flower dropping
+      </button>
+      <button class="quick-btn" onclick="askQuestion('Best time to plant Teja chilli in Guntur for Kharif season?')">
+        <span class="btn-icon">📅</span>Planting schedule
+      </button>
+      <button class="quick-btn" onclick="askQuestion('How to prepare organic fertilizer for chilli at home?')">
+        <span class="btn-icon">🌱</span>Home fertilizer tips
+      </button>
+    </div>
+
+    <div class="sidebar-section">
+      <h3>Language</h3>
+      <div class="lang-grid">
+        <button class="lang-btn active" onclick="setLang('en')">English</button>
+        <button class="lang-btn" onclick="setLang('te')">తెలుగు</button>
+        <button class="lang-btn" onclick="setLang('hi')">हिंदी</button>
+        <button class="lang-btn" onclick="setLang('ta')">தமிழ்</button>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <h3>Can Detect</h3>
+      <div class="pest-badge"><div class="pest-dot"></div>Fruit Borer (Helicoverpa)</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Chilli Thrips</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Aphids</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Whitefly</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Spider Mites</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Mealybug</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Armyworm</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Leaf Miner</div>
+    </div>
+
+  </aside>
+
+  <!-- Main Chat -->
+  <main class="chat-area">
+    <div class="chat-messages" id="chatMessages">
+
+      <!-- Welcome State -->
+      <div class="welcome" id="welcomeState">
+        <div class="welcome-icon">🌶️</div>
+        <h2>Namaste! I'm ChilliGuru</h2>
+        <p>Your expert farming assistant for Andhra Pradesh & Telangana. Ask me anything about growing chillies — in English, Telugu, or Hindi.</p>
+        <div class="welcome-cards">
+          <div class="welcome-card" onclick="askQuestion('I am a beginner. How do I start growing Teja chilli?')">
+            <div class="wc-icon">🌱</div>
+            <div class="wc-title">Start Growing</div>
+            <div class="wc-desc">Seed to harvest guide</div>
+          </div>
+          <div class="welcome-card" onclick="triggerImageUpload()">
+            <div class="wc-icon">📷</div>
+            <div class="wc-title">Identify Pest</div>
+            <div class="wc-desc">Upload a photo to diagnose</div>
+          </div>
+          <div class="welcome-card" onclick="askQuestion('నా మిరప ఆకులు పసుపు రంగులోకి మారుతున్నాయి — ఎందుకు?')">
+            <div class="wc-icon">🍃</div>
+            <div class="wc-title">తెలుగులో అడగండి</div>
+            <div class="wc-desc">Telugu support</div>
+          </div>
+          <div class="welcome-card" onclick="askQuestion('Best organic spray to prevent pests during Kharif season in Guntur?')">
+            <div class="wc-icon">🌿</div>
+            <div class="wc-title">Organic Solutions</div>
+            <div class="wc-desc">Home-made & shop remedies</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Image Preview -->
+    <div class="image-preview" id="imagePreview">
+      <img class="preview-img" id="previewImg" src="" alt="">
+      <span id="previewName">photo.jpg</span>
+      <span class="remove-img" onclick="removeImage()">✕</span>
+    </div>
+
+    <!-- Input Area -->
+    <div class="input-area">
+      <div class="input-box">
+        <textarea
+          id="userInput"
+          placeholder="Ask about your chilli crop... or upload a photo 📷"
+          rows="1"
+          onkeydown="handleKey(event)"
+          oninput="autoResize(this)"
+        ></textarea>
+        <div class="input-actions">
+          <button class="img-btn" onclick="triggerImageUpload()" title="Upload plant photo">📷</button>
+          <button class="send-btn" id="sendBtn" onclick="sendMessage()">➤</button>
+        </div>
+      </div>
+      <div class="input-hint">Upload a photo of your plant for AI pest detection • Organic solutions only</div>
+    </div>
+
+    <input type="file" id="fileInput" accept="image/*" onchange="handleImageUpload(event)">
+  </main>
+
+  <!-- Right Sidebar -->
+  <aside class="sidebar-right">
+
+    <div class="sidebar-section">
+      <h3 style="font-size:11px;font-weight:500;color:var(--text-lt);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">Season Guide</h3>
+      <div class="info-card">
+        <h4>Current Seasons</h4>
+        <div class="season-item">
+          <div class="season-dot" style="background:#27ae60"></div>
+          <div><strong>Kharif</strong> — Jun–Oct<br><span style="color:var(--text-lt);font-size:11px;">Fungal & heavy pest pressure</span></div>
+        </div>
+        <div class="season-item">
+          <div class="season-dot" style="background:#e67e22"></div>
+          <div><strong>Rabi</strong> — Nov–Feb<br><span style="color:var(--text-lt);font-size:11px;">Thrips & powdery mildew</span></div>
+        </div>
+        <div class="season-item">
+          <div class="season-dot" style="background:#e74c3c"></div>
+          <div><strong>Zaid</strong> — Mar–May<br><span style="color:var(--text-lt);font-size:11px;">Spider mites & heat stress</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <h3 style="font-size:11px;font-weight:500;color:var(--text-lt);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">Varieties</h3>
+      <div>
+        <span class="variety-chip">Teja (S17)</span>
+        <span class="variety-chip">Guntur Sannam</span>
+        <span class="variety-chip">LCA 334</span>
+        <span class="variety-chip">Wonder Hot</span>
+        <span class="variety-chip">Pusa Jwala</span>
+        <span class="variety-chip">Byadgi</span>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <h3 style="font-size:11px;font-weight:500;color:var(--text-lt);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">Model Accuracy</h3>
+      <div class="info-card">
+        <h4>Detection Performance</h4>
+        <div class="accuracy-bar">
+          <div class="acc-row"><span>Aphids</span><div class="acc-track"><div class="acc-fill" style="width:91.9%"></div></div><span>91.9%</span></div>
+          <div class="acc-row"><span>Spider Mites</span><div class="acc-track"><div class="acc-fill" style="width:90.7%"></div></div><span>90.7%</span></div>
+          <div class="acc-row"><span>Armyworm</span><div class="acc-track"><div class="acc-fill" style="width:88.4%"></div></div><span>88.4%</span></div>
+          <div class="acc-row"><span>Cutworm</span><div class="acc-track"><div class="acc-fill" style="width:87%"></div></div><span>87%</span></div>
+          <div class="acc-row"><span>Whitefly</span><div class="acc-track"><div class="acc-fill" style="width:78.8%"></div></div><span>78.8%</span></div>
+          <div class="acc-row"><span>Fruit Borer</span><div class="acc-track"><div class="acc-fill" style="width:74.6%"></div></div><span>74.6%</span></div>
+          <div class="acc-row"><span>Chilli Thrips</span><div class="acc-track"><div class="acc-fill" style="width:75.4%"></div></div><span>75.4%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="info-card" style="background:var(--red-soft);border-color:#f1948a;">
+      <h4 style="color:var(--red-dark);">🌿 Organic Only</h4>
+      <p style="font-size:12px;color:var(--red-dark);line-height:1.5;">ChilliGuru never recommends chemicals. All solutions use home-made or commercially available organic inputs.</p>
+    </div>
+
+  </aside>
+
+</div>
+
+<script>
+  // ── State ──────────────────────────────────────────────────────────────────
+  const GROQ_API_KEY = ''; // Replace with your key
+  let conversation   = [];
+  let selectedImage  = null;
+  let currentLang    = 'en';
+  let isLoading      = false;
+
+  const LANG_PROMPTS = {
+    en: '',
+    te: 'Please respond in Telugu (తెలుగు).',
+    hi: 'Please respond in Hindi (हिंदी).',
+    ta: 'Please respond in Tamil (தமிழ்).',
+  };
+
+  const SYSTEM_PROMPT = `You are ChilliGuru, a friendly and helpful farming assistant for chilli farmers in Andhra Pradesh and Telangana. You talk like a trusted friend who knows a lot about farming — simple, warm, and easy to understand. No complicated words.
+
+VARIETIES: Teja, Guntur Sannam, LCA 334, Wonder Hot, Pusa Jwala, Byadgi, and local varieties across Guntur, Khammam, Warangal, Krishna, Prakasam, Kurnool.
+
+SEASONS: Kharif (Jun-Oct) rainy season; Rabi (Nov-Feb) cool season; Zaid (Mar-May) hot season.
+
+PESTS: Thrips, Spider Mites, Aphids, Whiteflies, Fruit Borer, Mealybugs, Leaf Miners, Armyworm, Cutworm, Broad Mite.
+
+DISEASES: Leaf Curl Virus, Powdery Mildew, Anthracnose, Damping Off, Phytophthora, Cercospora Leaf Spot, Bacterial Wilt, Mosaic Virus.
+
+SOLUTION FORMAT — always use this:
+Solution name (Home-made OR Shop):
+How to make/use it: [simple steps]
+How well it works: X out of 10
+Days to see results: X-X days
+Cost: Rs X to Rs X
+How often: every X days for X weeks
+Where to get: [AP/Telangana]
+
+Always give 2-3 solutions. End with one prevention tip.
+ORGANIC ONLY — never suggest chemicals.
+LANGUAGE: reply in the same language the user writes in.`;
+
+  // ── Groq API ───────────────────────────────────────────────────────────────
+  async function callGroq(userMessage) {
+    const messages = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      ...conversation,
+      { role: 'user', content: userMessage }
+    ];
+
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GROQ_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages,
+        max_tokens: 1200,
+        temperature: 0.7
+      })
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.error?.message || 'API error');
+    }
+
+    const data  = await response.json();
+    const reply = data.choices[0].message.content;
+    conversation.push({ role: 'user', content: userMessage });
+    conversation.push({ role: 'assistant', content: reply });
+    return reply;
+  }
+
+  // ── UI Helpers ─────────────────────────────────────────────────────────────
+  function hideWelcome() {
+    const w = document.getElementById('welcomeState');
+    if (w) w.style.display = 'none';
+  }
+
+  function addMessage(role, content, imageUrl = null) {
+    hideWelcome();
+    const container = document.getElementById('chatMessages');
+    const div       = document.createElement('div');
+    div.className   = `message ${role}`;
+
+    const avatar    = document.createElement('div');
+    avatar.className = role === 'bot' ? 'avatar bot' : 'avatar user-av';
+    avatar.textContent = role === 'bot' ? '🌶️' : 'You';
+
+    const bubble    = document.createElement('div');
+    bubble.className = 'bubble';
+
+    if (role === 'bot') {
+      const name = document.createElement('div');
+      name.className   = 'bubble-name';
+      name.textContent = 'ChilliGuru';
+      bubble.appendChild(name);
+    }
+
+    if (imageUrl) {
+      const img     = document.createElement('img');
+      img.src       = imageUrl;
+      img.style.cssText = 'max-width:200px;border-radius:10px;margin-bottom:8px;display:block;';
+      bubble.appendChild(img);
+    }
+
+    const text = document.createElement('div');
+    text.style.whiteSpace = 'pre-wrap';
+    text.textContent = content;
+    bubble.appendChild(text);
+
+    div.appendChild(avatar);
+    div.appendChild(bubble);
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+    return div;
+  }
+
+  function addTyping() {
+    hideWelcome();
+    const container = document.getElementById('chatMessages');
+    const div       = document.createElement('div');
+    div.className   = 'message bot';
+    div.id          = 'typingMsg';
+
+    const avatar    = document.createElement('div');
+    avatar.className = 'avatar bot';
+    avatar.textContent = '🌶️';
+
+    const typing    = document.createElement('div');
+    typing.className = 'typing';
+    typing.innerHTML = '<span></span><span></span><span></span>';
+
+    div.appendChild(avatar);
+    div.appendChild(typing);
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function removeTyping() {
+    const t = document.getElementById('typingMsg');
+    if (t) t.remove();
+  }
+
+  // ── Send Message ───────────────────────────────────────────────────────────
+  async function sendMessage() {
+    const input   = document.getElementById('userInput');
+    const text    = input.value.trim();
+    const langMsg = LANG_PROMPTS[currentLang];
+
+    if (!text && !selectedImage) return;
+    if (isLoading) return;
+
+    isLoading = true;
+    document.getElementById('sendBtn').disabled = true;
+
+    const userText    = text || 'Please analyse this photo of my chilli plant.';
+    const displayText = text || '📷 Photo uploaded for analysis';
+    const imageUrl    = selectedImage ? URL.createObjectURL(selectedImage) : null;
+
+    addMessage('user', displayText, imageUrl);
+    input.value = '';
+    autoResize(input);
+    removeImage();
+
+    addTyping();
+
+    try {
+      let messageToSend = userText;
+      if (langMsg) messageToSend = `${langMsg} ${userText}`;
+      if (selectedImage) messageToSend = `[User uploaded a photo of their chilli plant for pest/disease analysis] ${messageToSend}`;
+
+      const reply = await callGroq(messageToSend);
+      removeTyping();
+      addMessage('bot', reply);
+    } catch (err) {
+      removeTyping();
+      addMessage('bot', `Sorry, something went wrong: ${err.message}\n\nPlease check your Groq API key in the code.`);
+    }
+
+    isLoading = false;
+    document.getElementById('sendBtn').disabled = false;
+    selectedImage = null;
+  }
+
+  // ── Quick Ask ──────────────────────────────────────────────────────────────
+  function askQuestion(q) {
+    document.getElementById('userInput').value = q;
+    sendMessage();
+  }
+
+  // ── Image Handling ─────────────────────────────────────────────────────────
+  function triggerImageUpload() {
+    document.getElementById('fileInput').click();
+  }
+
+  function handleImageUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    selectedImage = file;
+
+    const preview    = document.getElementById('imagePreview');
+    const previewImg = document.getElementById('previewImg');
+    const previewName = document.getElementById('previewName');
+
+    previewImg.src      = URL.createObjectURL(file);
+    previewName.textContent = file.name;
+    preview.classList.add('show');
+
+    document.getElementById('userInput').placeholder = 'Describe what you see, or press send to auto-analyse...';
+  }
+
+  function removeImage() {
+    selectedImage = null;
+    document.getElementById('imagePreview').classList.remove('show');
+    document.getElementById('fileInput').value = '';
+    document.getElementById('userInput').placeholder = 'Ask about your chilli crop... or upload a photo 📷';
+  }
+
+  // ── Language ───────────────────────────────────────────────────────────────
+  function setLang(lang) {
+    currentLang = lang;
+    document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
+    event.target.classList.add('active');
+  }
+
+  // ── Keyboard & Auto-resize ─────────────────────────────────────────────────
+  function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  }
+
+  function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  }
+</script>
+</body>
+</html>
