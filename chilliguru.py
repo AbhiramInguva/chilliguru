@@ -9,6 +9,8 @@ Setup:
 import os
 import sys
 from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv()
 
 try:
     import requests
