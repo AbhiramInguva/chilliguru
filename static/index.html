@@ -1014,8 +1014,11 @@ LANGUAGE: reply in the same language the user writes in.`;
         form.append('history', JSON.stringify(conversation));
         console.log('Sending to:', API_BASE + '/detect');
         const res = await fetch(`${API_BASE}/detect`, { method: 'POST', body: form });
-        if (!res.ok) { const e = await res.json(); throw new Error(e.error || 'Detection error'); }
-        const data = await res.json();
+        console.log('Response status:', res.status);
+        const rawText = await res.text();
+        console.log('Raw response:', rawText);
+        if (!res.ok) { throw new Error(JSON.parse(rawText).error || 'Detection error'); }
+        const data = JSON.parse(rawText);
         reply = data.reply;
         conversation.push({ role: 'user', content: userText });
         conversation.push({ role: 'assistant', content: reply });
