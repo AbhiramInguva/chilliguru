@@ -43,6 +43,7 @@ def health():
 
 @app.route("/chat", methods=["POST"])
 def chat():
+    print(f'DEBUG KEY: {os.getenv("GROQ_API_KEY", "NOT FOUND")[:10]}')
     data    = request.get_json()
     message = data.get("message", "").strip()
     history = data.get("history", [])
