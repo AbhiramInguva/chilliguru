@@ -5,8 +5,19 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from groq import Groq
 
+MODEL_PT   = "chilli_pest_model.pt"
+HF_REPO    = "inguvaaa/chilliguru-pest-model"
 MODEL      = "llama-3.3-70b-versatile"
 MAX_TOKENS = 1200
+
+def _ensure_model():
+    if not Path(MODEL_PT).exists():
+        print(f"Downloading {MODEL_PT} from Hugging Face...", flush=True)
+        from huggingface_hub import hf_hub_download
+        hf_hub_download(repo_id=HF_REPO, filename=MODEL_PT, local_dir=".")
+        print("Model download complete.", flush=True)
+
+_ensure_model()
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
