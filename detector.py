@@ -11,6 +11,9 @@ warnings.filterwarnings("ignore")
 CUSTOM_MODEL_PATH    = "chilli_pest_model.pt"
 CONFIDENCE_THRESHOLD = 45.0
 
+if not Path(CUSTOM_MODEL_PATH).exists():
+    print(f"WARNING: {CUSTOM_MODEL_PATH} not found — pest detector disabled.", flush=True)
+
 _custom_model = None
 
 # ── 18 class labels from VIT-AP model ────────────────────────────────────────
