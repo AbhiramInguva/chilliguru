@@ -4,3 +4,4 @@ groq==1.2.0
 pillow
 gunicorn==26.0.0
 requests
+python-dotenv

@@ -1,9 +1,12 @@
 import os
 import tempfile
 from pathlib import Path
+from dotenv import load_dotenv
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from groq import Groq
+
+load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 MODEL        = "llama-3.3-70b-versatile"
