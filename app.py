@@ -5,13 +5,14 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from groq import Groq
 
-GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
-MODEL        = "llama-3.3-70b-versatile"
-MAX_TOKENS   = 1200
+MODEL      = "llama-3.3-70b-versatile"
+MAX_TOKENS = 1200
 
-app    = Flask(__name__, static_folder="static")
+app = Flask(__name__, static_folder="static")
 CORS(app)
-client = Groq(api_key=GROQ_API_KEY)
+
+def get_client():
+    return Groq(api_key=os.getenv('GROQ_API_KEY', ''))
 
 SYSTEM_PROMPT = """You are ChilliGuru, a friendly farming assistant for chilli farmers in Andhra Pradesh and Telangana. Talk like a trusted friend — simple, warm, easy to understand.
 
@@ -38,7 +39,7 @@ def index():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "model_ready": False, "groq_ready": bool(GROQ_API_KEY)})
+    return jsonify({"status": "ok", "model_ready": False, "groq_ready": bool(os.getenv('GROQ_API_KEY', ''))})
 
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -49,7 +50,7 @@ def chat():
         return jsonify({"error": "No message"}), 400
     try:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": message}]
-        response = client.chat.completions.create(model=MODEL, messages=messages, max_tokens=MAX_TOKENS, temperature=0.7)
+        response = get_client().chat.completions.create(model=MODEL, messages=messages, max_tokens=MAX_TOKENS, temperature=0.7)
         return jsonify({"reply": response.choices[0].message.content.strip()})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -66,7 +67,7 @@ def detect():
     context = f"[Farmer uploaded a photo of their chilli plant. They described: '{user_msg}'. Ask 2 simple questions to diagnose the problem, then give 2-3 organic solutions with metrics.]"
     try:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": context}]
-        response = client.chat.completions.create(model=MODEL, messages=messages, max_tokens=MAX_TOKENS, temperature=0.7)
+        response = get_client().chat.completions.create(model=MODEL, messages=messages, max_tokens=MAX_TOKENS, temperature=0.7)
         return jsonify({"reply": response.choices[0].message.content.strip(), "detection": None})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
