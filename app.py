@@ -23,9 +23,11 @@ def call_hf_detector(image_bytes):
         # Step 1: POST to get event_id
         r1 = httpx.post(
             HF_SPACE_URL,
-            json={"data": [{"image": f"data:image/jpeg;base64,{b64}", "path": None}]},
+            json={"data": [f"data:image/jpeg;base64,{b64}"]},
             timeout=30
         )
+        print(f"HF Status: {r1.status_code}", flush=True)
+        print(f"HF Response: {r1.text[:500]}", flush=True)
         event_id = r1.json().get("event_id")
         if not event_id:
             return {"error": "No event_id from HF"}
