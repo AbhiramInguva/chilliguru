@@ -1,6 +1,7 @@
 import os
 import json
 import base64
+import httpx
 import requests as req
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -8,7 +9,7 @@ from groq import Groq
 
 MODEL        = "llama-3.3-70b-versatile"
 MAX_TOKENS   = 1200
-HF_SPACE_URL = "https://inguvaaa-chilliguru-detector.hf.space/run/predict"
+HF_SPACE_URL = "https://inguvaaa-chilliguru-detector.hf.space/call/predict"
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
@@ -18,12 +19,25 @@ def get_client():
 
 def call_hf_detector(image_bytes):
     try:
-        b64     = base64.b64encode(image_bytes).decode()
-        payload = {"data": [f"data:image/jpeg;base64,{b64}"]}
-        response = req.post(HF_SPACE_URL, json=payload, timeout=30)
-        if response.status_code == 200:
-            return response.json().get("data", [{}])[0]
-        return {"error": f"HF returned {response.status_code}"}
+        b64 = base64.b64encode(image_bytes).decode()
+        # Step 1: POST to get event_id
+        r1 = httpx.post(
+            HF_SPACE_URL,
+            json={"data": [{"image": f"data:image/jpeg;base64,{b64}", "path": None}]},
+            timeout=30
+        )
+        event_id = r1.json().get("event_id")
+        if not event_id:
+            return {"error": "No event_id from HF"}
+        # Step 2: GET result stream
+        r2 = httpx.get(
+            f"{HF_SPACE_URL}/{event_id}",
+            timeout=60
+        )
+        for line in r2.text.splitlines():
+            if line.startswith("data:"):
+                return json.loads(line[5:])[0]
+        return {"error": "No data in response"}
     except Exception as e:
         return {"error": str(e)}
 
