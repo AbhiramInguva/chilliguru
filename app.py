@@ -1,15 +1,11 @@
 import os
 import json
-import base64
-import httpx
-import requests as req
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from groq import Groq
 
-MODEL        = "llama-3.3-70b-versatile"
-MAX_TOKENS   = 1200
-HF_SPACE_URL = "https://inguvaaa-chilliguru-detector.hf.space/call/predict"
+MODEL      = "llama-3.3-70b-versatile"
+MAX_TOKENS = 1200
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
@@ -19,29 +15,21 @@ def get_client():
 
 def call_hf_detector(image_bytes):
     try:
-        b64 = base64.b64encode(image_bytes).decode()
-        # Step 1: POST to get event_id
-        r1 = httpx.post(
-            HF_SPACE_URL,
-            json={"data": [f"data:image/jpeg;base64,{b64}"]},
-            timeout=30
-        )
-        print(f"HF Status: {r1.status_code}", flush=True)
-        print(f"HF Response: {r1.text[:500]}", flush=True)
-        event_id = r1.json().get("event_id")
-        if not event_id:
-            return {"error": "No event_id from HF"}
-        # Step 2: GET result stream
-        r2 = httpx.get(
-            f"{HF_SPACE_URL}/{event_id}",
-            timeout=60
-        )
-        for line in r2.text.splitlines():
-            if line.startswith("data:"):
-                return json.loads(line[5:])[0]
-        return {"error": "No data in response"}
+        from gradio_client import Client, handle_file
+        import tempfile
+        from PIL import Image
+
+        # Save bytes to temp file
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as f:
+            f.write(image_bytes)
+            tmp_path = f.name
+
+        client = Client('inguvaaa/chilliguru-detector')
+        result = client.predict(image=handle_file(tmp_path), api_name='/predict')
+        os.unlink(tmp_path)
+        return result
     except Exception as e:
-        return {"error": str(e)}
+        return {'error': str(e)}
 
 SYSTEM_PROMPT = """IMPORTANT: Always respond in English unless the farmer writes in Telugu, Hindi, or Tamil first. Default language is English.
 

@@ -5,4 +5,4 @@ pillow
 gunicorn==26.0.0
 requests
 python-dotenv
-httpx
+gradio_client
