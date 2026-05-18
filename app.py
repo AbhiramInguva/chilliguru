@@ -1,5 +1,6 @@
 import os
 import json
+import threading
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from groq import Groq
@@ -9,6 +10,17 @@ MAX_TOKENS = 1200
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
+
+def _wake_hf_space():
+    try:
+        from gradio_client import Client
+        print("Waking HF Space...", flush=True)
+        Client('inguvaaa/chilliguru-detector')
+        print("HF Space awake.", flush=True)
+    except Exception as e:
+        print(f"HF Space wakeup failed (non-fatal): {e}", flush=True)
+
+threading.Thread(target=_wake_hf_space, daemon=True).start()
 
 def get_client():
     return Groq(api_key=os.getenv("GROQ_API_KEY", ""))
