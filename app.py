@@ -15,20 +15,21 @@ def get_client():
 
 def call_hf_detector(image_bytes):
     try:
-        from gradio_client import Client, handle_file
         import tempfile
-        from PIL import Image
+        from gradio_client import Client, handle_file
 
-        # Save bytes to temp file
         with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as f:
             f.write(image_bytes)
             tmp_path = f.name
 
-        client = Client('inguvaaa/chilliguru-detector')
+        print("Calling HF Space...", flush=True)
+        client = Client('inguvaaa/chilliguru-detector', verbose=False)
         result = client.predict(image=handle_file(tmp_path), api_name='/predict')
         os.unlink(tmp_path)
-        return result
+        print(f"HF result: {result}", flush=True)
+        return result if isinstance(result, dict) else {'error': f'Unexpected result type: {type(result)}'}
     except Exception as e:
+        print(f"HF detector exception: {e}", flush=True)
         return {'error': str(e)}
 
 SYSTEM_PROMPT = """IMPORTANT: Always respond in English unless the farmer writes in Telugu, Hindi, or Tamil first. Default language is English.
@@ -80,6 +81,13 @@ def chat():
 
 @app.route("/detect", methods=["POST"])
 def detect():
+    try:
+     return _detect_inner()
+    except Exception as e:
+        print(f"Unhandled /detect error: {e}", flush=True)
+        return jsonify({"error": str(e)}), 500
+
+def _detect_inner():
     user_msg    = request.form.get("message", "").strip()
     history_raw = request.form.get("history", "[]")
     try:
