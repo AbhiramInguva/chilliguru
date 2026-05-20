@@ -227,44 +227,45 @@ def _resolve_label(raw_label, cls_id):
 def _sev(c):
     return "High" if c >= 80 else ("Medium" if c >= 50 else "Low (not very sure)")
 
-def detect(image_path):
-    """
-    3-Phase Cascaded Inference Engine:
-    Phase 1: Primary chilli detector (confidence ≥ 0.40)
-    Phase 2: IP102 fallback (if Phase 1 fails or low conf)
-    Phase 3: Generic YOLOv8n (anomaly rejection if Phase 2 fails)
-    """
-    img = Path(image_path)
-    if not img.exists():
-        return {"success": False, "error": f"Image not found: {image_path}"}
 
-    # ── Preprocessing / Validation: Out-of-Domain Guardrail ──────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Internal cascade engine
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _detect_source(source):
+    """
+    3-Phase Cascaded Inference Engine (shared internal implementation).
+
+    `source` may be any type accepted by ultralytics model.predict():
+      • str / Path  — file path (used by the disk-based detect() entrypoint)
+      • numpy.ndarray (H×W×C, BGR) — in-memory array (used by detect_from_memory())
+
+    All three phases are isolated in try/except for fault tolerance.
+    """
+    AGRICULTURAL_CLASSES = {58, 50, 51, 46, 47, 49}
+    AGRICULTURAL_NAMES   = {"potted plant", "broccoli", "carrot", "banana", "apple", "orange"}
+
+    # ── Pre-check: Out-of-Domain Guardrail ────────────────────────────────────
     try:
         phase3_model = _load_yolov8n_model()
         if phase3_model:
-            results = phase3_model.predict(str(img), verbose=False, conf=0.10)
-            boxes = results[0].boxes
+            results   = phase3_model.predict(source, verbose=False, conf=0.10)
+            boxes     = results[0].boxes
             names_map = results[0].names
 
-            AGRICULTURAL_CLASSES = {58, 50, 51, 46, 47, 49}
-            AGRICULTURAL_NAMES = {"potted plant", "broccoli", "carrot", "banana", "apple", "orange"}
-
-            # If the model returns 0 detections (solid canvas, blank wall/background)
             if boxes is None or len(boxes) == 0:
                 return {
                     "success": False,
                     "error": "Please upload chili plant images",
                     "phase": 3,
-                    "low_confidence": True
+                    "low_confidence": True,
                 }
 
-            # Check if the detected object classes are purely non-agricultural
             purely_non_agricultural = True
             for box in boxes:
-                cls_id = int(box.cls[0])
+                cls_id     = int(box.cls[0])
                 class_name = str(names_map.get(cls_id, cls_id)).lower()
-                is_ag = (cls_id in AGRICULTURAL_CLASSES) or (class_name in AGRICULTURAL_NAMES)
-                if is_ag:
+                if (cls_id in AGRICULTURAL_CLASSES) or (class_name in AGRICULTURAL_NAMES):
                     purely_non_agricultural = False
                     break
 
@@ -273,63 +274,59 @@ def detect(image_path):
                     "success": False,
                     "error": "Please upload chili plant images",
                     "phase": 3,
-                    "low_confidence": True
+                    "low_confidence": True,
                 }
     except Exception as e:
         log.error("ood_check_error", extra={"data": {"error_message": str(e)}})
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # PHASE 1: Primary Chilli Detector
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── PHASE 1: Primary Chilli Detector ──────────────────────────────────────
     phase1_result = None
     try:
         phase1_model = _load_custom()
         if phase1_model:
-            results = phase1_model.predict(str(img), verbose=False, conf=0.10)
-            boxes = results[0].boxes
+            results   = phase1_model.predict(source, verbose=False, conf=0.10)
+            boxes     = results[0].boxes
             names_map = results[0].names
 
             if boxes is not None and len(boxes) > 0:
                 detections = []
                 for box in boxes:
-                    cls_id = int(box.cls[0])
+                    cls_id     = int(box.cls[0])
                     model_name = names_map.get(cls_id, str(cls_id))
                     confidence = float(box.conf[0]) * 100.0
-                    raw_label = _resolve_label(model_name, cls_id)
+                    raw_label  = _resolve_label(model_name, cls_id)
                     english, telugu, kind = _get_friendly_name(raw_label)
                     display = f"{english} [{telugu}]" if telugu else english
-                    info = PEST_INFO.get(raw_label, {"symptoms": f"Damage by {english}", "damage": ""})
+                    info    = PEST_INFO.get(raw_label, {"symptoms": f"Damage by {english}", "damage": ""})
                     detections.append({
-                        "label": display,
-                        "raw_label": raw_label,
-                        "type": kind,
+                        "label":      display,
+                        "raw_label":  raw_label,
+                        "type":       kind,
                         "confidence": float(round(confidence, 1)),
-                        "severity": _sev(confidence),
-                        "symptoms": info["symptoms"],
-                        "damage": info["damage"],
+                        "severity":   _sev(confidence),
+                        "symptoms":   info["symptoms"],
+                        "damage":     info["damage"],
                     })
 
                 detections.sort(key=lambda x: x["confidence"], reverse=True)
                 top = detections[0]
-                
+
                 if top["confidence"] >= (PHASE1_MIN_CONF * 100):
-                    # Verify against actual localized agricultural profiles
                     if top["raw_label"] not in CLASS_NAMES:
                         return {
                             "success": False,
-                            "error": "Please upload chili plant images",
+                            "error":   "Please upload chili plant images",
                             "message": "Please upload chili plant images",
-                            "phase": 3,
-                            "low_confidence": True
+                            "phase":   3,
+                            "low_confidence": True,
                         }
-
                     phase1_result = {
-                        "success": True,
-                        "top_detection": top,
+                        "success":        True,
+                        "top_detection":  top,
                         "all_detections": detections[:3],
-                        "model_used": "Phase 1: VIT-AP ChilliGuru (18-class)",
+                        "model_used":     "Phase 1: VIT-AP ChilliGuru (18-class)",
                         "low_confidence": top["confidence"] < CONFIDENCE_THRESHOLD,
-                        "phase": 1,
+                        "phase":          1,
                     }
     except Exception as e:
         log.error("phase1_inference_error", extra={"data": {"error_message": str(e)}})
@@ -337,67 +334,65 @@ def detect(image_path):
     if phase1_result and phase1_result["success"]:
         return phase1_result
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # PHASE 2: IP102 Fallback Model
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── PHASE 2: IP102 Fallback Model ─────────────────────────────────────────
     phase2_result = None
     try:
         phase2_model = _load_ip102_model()
         if phase2_model:
-            results = phase2_model.predict(str(img), verbose=False, conf=0.10)
-            boxes = results[0].boxes
+            results   = phase2_model.predict(source, verbose=False, conf=0.10)
+            boxes     = results[0].boxes
             names_map = results[0].names
 
             if boxes is not None and len(boxes) > 0:
                 detections = []
                 for box in boxes:
-                    cls_id = int(box.cls[0])
+                    cls_id     = int(box.cls[0])
                     model_name = str(names_map.get(cls_id, cls_id)).lower()
                     confidence = float(box.conf[0]) * 100.0
-                    
-                    # Map IP102 class to ChilliGuru class
+
                     if model_name in IP102_CLASS_MAPPING:
                         raw_label, telugu, kind = IP102_CLASS_MAPPING[model_name]
                         english, _, _ = _get_friendly_name(raw_label)
                     else:
-                        english = model_name
-                        telugu = ""
-                        kind = "pest"
-                    
+                        english   = model_name
+                        telugu    = ""
+                        kind      = "pest"
+                        raw_label = model_name
+
                     display = f"{english} [{telugu}]" if telugu else english
-                    info = PEST_INFO.get(raw_label if model_name in IP102_CLASS_MAPPING else model_name,
-                                         {"symptoms": f"Detected by IP102: {english}", "damage": ""})
+                    info    = PEST_INFO.get(
+                        raw_label,
+                        {"symptoms": f"Detected by IP102: {english}", "damage": ""},
+                    )
                     detections.append({
-                        "label": display,
-                        "raw_label": model_name,
-                        "type": kind,
+                        "label":      display,
+                        "raw_label":  model_name,
+                        "type":       kind,
                         "confidence": float(round(confidence, 1)),
-                        "severity": _sev(confidence),
-                        "symptoms": info.get("symptoms", f"Damage by {english}"),
-                        "damage": info.get("damage", ""),
+                        "severity":   _sev(confidence),
+                        "symptoms":   info.get("symptoms", f"Damage by {english}"),
+                        "damage":     info.get("damage", ""),
                     })
 
                 detections.sort(key=lambda x: x["confidence"], reverse=True)
                 top = detections[0]
-                
+
                 if top["confidence"] >= 30:
-                    # Verify against actual localized agricultural profiles
                     if top["raw_label"] not in IP102_CLASS_MAPPING:
                         return {
                             "success": False,
-                            "error": "Please upload chili plant images",
+                            "error":   "Please upload chili plant images",
                             "message": "Please upload chili plant images",
-                            "phase": 3,
-                            "low_confidence": True
+                            "phase":   3,
+                            "low_confidence": True,
                         }
-
                     phase2_result = {
-                        "success": True,
-                        "top_detection": top,
+                        "success":        True,
+                        "top_detection":  top,
                         "all_detections": detections[:3],
-                        "model_used": "Phase 2: IP102 Generic Pest Detector (5-class)",
+                        "model_used":     "Phase 2: IP102 Generic Pest Detector (5-class)",
                         "low_confidence": top["confidence"] < CONFIDENCE_THRESHOLD,
-                        "phase": 2,
+                        "phase":          2,
                     }
     except Exception as e:
         log.error("phase2_inference_error", extra={"data": {"error_message": str(e)}})
@@ -405,40 +400,33 @@ def detect(image_path):
     if phase2_result and phase2_result["success"]:
         return phase2_result
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # PHASE 3: Generic YOLOv8n (Anomaly Rejection Check)
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── PHASE 3: Generic YOLOv8n Anomaly Rejection ────────────────────────────
     phase3_result = None
     try:
         phase3_model = _load_yolov8n_model()
         if phase3_model:
-            results = phase3_model.predict(str(img), verbose=False, conf=0.10)
-            boxes = results[0].boxes
+            results   = phase3_model.predict(source, verbose=False, conf=0.10)
+            boxes     = results[0].boxes
             names_map = results[0].names
-
-            # Standard COCO classes related to plants/agriculture
-            AGRICULTURAL_CLASSES = {58, 50, 51, 46, 47, 49}
-            AGRICULTURAL_NAMES = {"potted plant", "broccoli", "carrot", "banana", "apple", "orange"}
 
             non_agricultural_objects = []
             if boxes is not None and len(boxes) > 0:
                 for box in boxes:
-                    cls_id = int(box.cls[0])
+                    cls_id     = int(box.cls[0])
                     class_name = str(names_map.get(cls_id, cls_id)).lower()
                     is_ag = (cls_id in AGRICULTURAL_CLASSES) or (class_name in AGRICULTURAL_NAMES)
                     if not is_ag:
                         non_agricultural_objects.append(class_name)
 
-            if len(non_agricultural_objects) > 0:
-                # Phase 3 detected a non-agricultural object -> Reject immediately
+            if non_agricultural_objects:
                 phase3_result = {
-                    "success": False,
-                    "error": "Please upload chili plant images",
-                    "message": "Please upload chili plant images",
-                    "low_confidence": True,
-                    "phase": 3,
+                    "success":          False,
+                    "error":            "Please upload chili plant images",
+                    "message":          "Please upload chili plant images",
+                    "low_confidence":   True,
+                    "phase":            3,
                     "detected_objects": non_agricultural_objects,
-                    "model_used": "Phase 3: YOLOv8n Generic Detector (Anomaly Check)"
+                    "model_used":       "Phase 3: YOLOv8n Generic Detector (Anomaly Check)",
                 }
     except Exception as e:
         log.error("phase3_inference_error", extra={"data": {"error_message": str(e)}})
@@ -446,16 +434,87 @@ def detect(image_path):
     if phase3_result is not None:
         return phase3_result
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # All phases failed or unavailable, or completely fell through all three phases
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── All phases fell through ────────────────────────────────────────────────
     return {
-        "success": False,
-        "error": "Please upload chili plant images",
-        "message": "Please upload chili plant images",
+        "success":        False,
+        "error":          "Please upload chili plant images",
+        "message":        "Please upload chili plant images",
         "low_confidence": True,
-        "phase": 0,
+        "phase":          0,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public entrypoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect(image_path):
+    """
+    Disk-based public entrypoint — original API preserved.
+
+    Accepts a file-path string, validates existence, then delegates to the
+    shared _detect_source() cascade.  All callers that pass file paths
+    continue to work exactly as before.
+    """
+    img = Path(image_path)
+    if not img.exists():
+        return {"success": False, "error": f"Image not found: {image_path}"}
+    return _detect_source(str(img))
+
+
+def detect_from_memory(image_bytes: bytes):
+    """
+    Zero-I/O public entrypoint — decodes the image entirely in RAM.
+
+    Uses numpy + cv2 to decode the raw bytes into a BGR ndarray, then feeds
+    that array directly to ultralytics model.predict() (which supports ndarray
+    natively), bypassing any temp-file writes.
+
+    Safe fallback guarantee:
+      If numpy/cv2 is unavailable or the bytes cannot be decoded, the function
+      transparently writes a single temp file and delegates to detect() so that
+      the response path never throws an unhandled exception.
+    """
+    # ── Attempt in-memory decode ──────────────────────────────────────────────
+    try:
+        import numpy as np
+        import cv2
+        nparr     = np.frombuffer(image_bytes, np.uint8)
+        img_array = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img_array is None:
+            raise ValueError("cv2.imdecode returned None — unrecognised image format")
+        log.info("detect_from_memory_decode_ok",
+                 extra={"data": {"shape": str(img_array.shape)}})
+        return _detect_source(img_array)
+
+    except Exception as decode_exc:
+        log.warning("detect_from_memory_fallback",
+                    extra={"data": {"reason": str(decode_exc)}})
+
+    # ── Safe fallback: write one temp file and call detect() ──────────────────
+    import tempfile, os
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp.write(image_bytes)
+            tmp_path = tmp.name
+        return detect(tmp_path)
+    except Exception as fallback_exc:
+        log.error("detect_from_memory_fallback_error",
+                  extra={"data": {"error": str(fallback_exc)}})
+        return {
+            "success":        False,
+            "error":          "Image processing failed",
+            "phase":          0,
+            "low_confidence": True,
+        }
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
 
 def format_for_openai(result, user_description=""):
     if not result.get("success"):
@@ -506,5 +565,4 @@ def format_for_openai(result, user_description=""):
     ]
     return "\n".join(lines)
 
-# Sync: 2026-05-20T23:42:29
-
+# Sync: 2026-05-21T00:00:00

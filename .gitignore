@@ -11,14 +11,31 @@ kaggle_output/
 
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.pyo
 .env
+.env.*
 venv/
 .venv/
+env/
+*.egg-info/
+dist/
+build/
 
 # OS
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+
+# Editor / IDE
+.vscode/
+.idea/
+*.iml
+
+# Claude Code internal state
+.claude/
 
 # Shadow dataset — farmer images captured for active learning (runtime data, not committed)
 static/uploads/shadow_dataset/*
