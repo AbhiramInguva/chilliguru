@@ -630,6 +630,58 @@
   /* ── Hidden file input ────────────────────────────────────────────────── */
   #fileInput { display: none; }
 
+  /* ── Camera modal ─────────────────────────────────────────────────────── */
+  .camera-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.88);
+    z-index: 1000;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    padding: 24px;
+  }
+  .camera-modal.show { display: flex; }
+
+  .camera-video {
+    width: 100%;
+    max-width: 500px;
+    border-radius: 16px;
+    background: #111;
+    display: block;
+  }
+
+  .camera-controls {
+    display: flex;
+    gap: 12px;
+  }
+
+  .cam-btn {
+    padding: 12px 28px;
+    border-radius: 12px;
+    border: none;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: 'DM Sans', sans-serif;
+    transition: all 0.15s;
+  }
+
+  .cam-btn.capture {
+    background: var(--red);
+    color: white;
+  }
+  .cam-btn.capture:hover { background: var(--red-dark); }
+
+  .cam-btn.close-cam {
+    background: rgba(255,255,255,0.12);
+    color: white;
+    border: 1px solid rgba(255,255,255,0.25);
+  }
+  .cam-btn.close-cam:hover { background: rgba(255,255,255,0.22); }
+
   /* ── Scrollbar ────────────────────────────────────────────────────────── */
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -766,11 +818,12 @@
           oninput="autoResize(this)"
         ></textarea>
         <div class="input-actions">
-          <button class="img-btn" onclick="triggerImageUpload()" title="Upload plant photo">📷</button>
+          <button class="img-btn" onclick="triggerImageUpload()" title="Upload photo from gallery">🖼️</button>
+          <button class="img-btn" onclick="openCamera()" title="Take photo with camera">📸</button>
           <button class="send-btn" id="sendBtn" onclick="sendMessage()">➤</button>
         </div>
       </div>
-      <div class="input-hint">Upload a photo of your plant for AI pest detection • Organic solutions only</div>
+      <div class="input-hint">Take a photo or upload from gallery for AI pest detection • Organic solutions only</div>
     </div>
 
     <input type="file" id="fileInput" accept="image/*" onchange="handleImageUpload(event)">
@@ -833,6 +886,15 @@
 
   </aside>
 
+</div>
+
+<!-- Camera Modal (fixed overlay, outside layout) -->
+<div class="camera-modal" id="cameraModal">
+  <video class="camera-video" id="cameraVideo" autoplay playsinline muted></video>
+  <div class="camera-controls">
+    <button class="cam-btn capture" onclick="capturePhoto()">📸 Capture</button>
+    <button class="cam-btn close-cam" onclick="closeCamera()">✕ Close</button>
+  </div>
 </div>
 
 <script>
@@ -1115,6 +1177,60 @@ LANGUAGE: reply in the same language the user writes in.`;
   function autoResize(el) {
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  }
+
+  // ── Camera ─────────────────────────────────────────────────────────────────
+  let cameraStream = null;
+
+  async function openCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('Camera not supported on this device. Use the gallery button to upload a photo.');
+      document.getElementById('fileInput').click();
+      return;
+    }
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      const video = document.getElementById('cameraVideo');
+      video.srcObject = cameraStream;
+      document.getElementById('cameraModal').classList.add('show');
+    } catch (err) {
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        alert('Camera access denied. Allow camera permissions in your browser, or use the gallery button to upload a photo.');
+      } else {
+        alert('Could not open camera. Use the gallery button to upload a photo instead.');
+        document.getElementById('fileInput').click();
+      }
+    }
+  }
+
+  function capturePhoto() {
+    const video = document.getElementById('cameraVideo');
+    const canvas = document.createElement('canvas');
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    closeCamera();
+    canvas.toBlob(blob => {
+      const file = new File([blob], 'camera-capture.jpg', { type: 'image/jpeg' });
+      selectedImage = file;
+      const preview     = document.getElementById('imagePreview');
+      const previewImg  = document.getElementById('previewImg');
+      const previewName = document.getElementById('previewName');
+      previewImg.src          = URL.createObjectURL(file);
+      previewName.textContent = 'camera-capture.jpg';
+      preview.classList.add('show');
+      document.getElementById('userInput').placeholder = 'Describe what you see, or press send to auto-analyse...';
+    }, 'image/jpeg', 0.85);
+  }
+
+  function closeCamera() {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(t => t.stop());
+      cameraStream = null;
+    }
+    const video = document.getElementById('cameraVideo');
+    video.srcObject = null;
+    document.getElementById('cameraModal').classList.remove('show');
   }
 </script>
 </body>
