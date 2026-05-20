@@ -168,15 +168,20 @@ def _detect_inner():
                 "detection": None
             })
 
-        top = result.get("top_detection") if isinstance(result, dict) else None
+        top    = result.get("top_detection") if isinstance(result, dict) else None
+        is_low = result.get("low_confidence", False) if isinstance(result, dict) else True
 
-        if top and not result.get("low_confidence") and not result.get("error"):
-            # Confident detection — give Groq full context
+        if top and not result.get("error"):
+            # Detection present (confident or low-confidence) — give Groq full context
             label      = top.get("label", "unknown pest")
             telugu     = top.get("telugu", "")
             confidence = top.get("confidence", 0)
             kind       = top.get("type", "pest")
             detection  = top
+            low_note   = (
+                "\nNOTE: This is a low-confidence detection. "
+                "Mention to the farmer that you are not fully certain and ask one short clarifying question."
+            ) if is_low else ""
             groq_context = (
                 f"=== CNN DETECTION RESULT ===\n"
                 f"Detected: {label}" + (f" [{telugu}]" if telugu else "") + f"\n"
@@ -185,9 +190,11 @@ def _detect_inner():
                 f"INSTRUCTION: Tell the farmer clearly what this {kind} is in simple words "
                 f"(mention the Telugu name {telugu} if helpful). "
                 f"Give 2-3 organic solutions with metrics. End with one prevention tip."
+                + low_note
             )
         else:
-            # No confident detection — fall back to questioning
+            # No detection at all — fall back to questioning
+            is_low = True
             err = result.get("error", "") if isinstance(result, dict) else ""
             if err:
                 print(f"Detector error: {err}", flush=True)
@@ -212,7 +219,7 @@ def _detect_inner():
     try:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": groq_context}]
         response = get_client().chat.completions.create(model=MODEL, messages=messages, max_tokens=MAX_TOKENS, temperature=0.7)
-        return jsonify({"reply": response.choices[0].message.content.strip(), "detection": detection})
+        return jsonify({"reply": response.choices[0].message.content.strip(), "detection": detection, "low_confidence": is_low})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

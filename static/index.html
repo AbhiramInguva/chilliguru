@@ -911,12 +911,26 @@ LANGUAGE: reply in the same language the user writes in.`;
   }
 
   // ── UI Helpers ─────────────────────────────────────────────────────────────
+  function buildDetectionCard(det, isLow) {
+    const label = det.label || 'Unknown';
+    const telugu = det.telugu ? ` — ${det.telugu}` : '';
+    const conf = det.confidence != null ? `${det.confidence}%` : '?';
+    const kind = det.type || 'pest';
+    const warn = isLow
+      ? `<div style="display:inline-flex;align-items:center;gap:6px;background:#fff3cd;border:1px solid #ffc107;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:600;color:#856404;margin-bottom:8px;">⚠️ Low Confidence Warning</div><br>`
+      : '';
+    return (
+      `${warn}<div class="detection-badge">🔍 ${label}${telugu}</div>` +
+      `<div style="font-size:12px;color:var(--text-lt);margin:4px 0 10px;">Confidence: ${conf} | Type: ${kind}</div>`
+    );
+  }
+
   function hideWelcome() {
     const w = document.getElementById('welcomeState');
     if (w) w.style.display = 'none';
   }
 
-  function addMessage(role, content, imageUrl = null) {
+  function addMessage(role, content, imageUrl = null, detectionCard = null) {
     hideWelcome();
     const container = document.getElementById('chatMessages');
     const div       = document.createElement('div');
@@ -941,6 +955,12 @@ LANGUAGE: reply in the same language the user writes in.`;
       img.src       = imageUrl;
       img.style.cssText = 'max-width:200px;border-radius:10px;margin-bottom:8px;display:block;';
       bubble.appendChild(img);
+    }
+
+    if (detectionCard) {
+      const cardEl = document.createElement('div');
+      cardEl.innerHTML = detectionCard;
+      bubble.appendChild(cardEl);
     }
 
     const text = document.createElement('div');
@@ -1007,6 +1027,7 @@ LANGUAGE: reply in the same language the user writes in.`;
 
     try {
       let reply;
+      let detectionCard = null;
       if (imageToSend) {
         const form = new FormData();
         form.append('image', imageToSend);
@@ -1020,6 +1041,9 @@ LANGUAGE: reply in the same language the user writes in.`;
         if (!res.ok) { throw new Error(JSON.parse(rawText).error || 'Detection error'); }
         const data = JSON.parse(rawText);
         reply = data.reply;
+        const det   = data.detection;
+        const isLow = data.low_confidence;
+        detectionCard = det ? buildDetectionCard(det, isLow) : null;
         conversation.push({ role: 'user', content: userText });
         conversation.push({ role: 'assistant', content: reply });
       } else {
@@ -1028,7 +1052,7 @@ LANGUAGE: reply in the same language the user writes in.`;
         reply = await callGroq(messageToSend);
       }
       removeTyping();
-      addMessage('bot', reply);
+      addMessage('bot', reply, null, detectionCard);
     } catch (err) {
       removeTyping();
       addMessage('bot', `Sorry, something went wrong: ${err.message}`);
