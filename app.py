@@ -1,10 +1,13 @@
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
+import threading
 import time
 import traceback
+import uuid
 from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 from flask_cors import CORS
 from flask_limiter import Limiter
@@ -48,6 +51,11 @@ _IMAGE_SIGNATURES = [
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
+
+# ── Shadow dataset directory (created once at startup) ────────────────────────
+SHADOW_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "static", "uploads", "shadow_dataset")
+os.makedirs(SHADOW_DIR, exist_ok=True)
 
 limiter = Limiter(
     get_remote_address,
@@ -193,6 +201,60 @@ def _groq_stream_generator(messages, detection, is_low):
         yield f"data: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
 
 
+# ── Data Flywheel — shadow dataset helpers ────────────────────────────────────
+
+def _shadow_save(image_bytes: bytes, label: str, confidence, trigger: str) -> None:
+    """
+    Write *image_bytes* into SHADOW_DIR for offline active-learning review.
+
+    Filename schema:
+        {trigger}_{confidence}_{label_slug}_{YYYYMMDD_HHMMSS}_{uuid6}.jpg
+
+    Examples:
+        low_conf_38_whitefly_20260521_143025_a1b2c3.jpg
+        phase3_0_non_chilli_20260521_094512_d4e5f6.jpg
+
+    All filesystem errors are caught and logged as warnings so they can
+    never interrupt the HTTP response already in flight.
+    """
+    try:
+        ts         = time.strftime("%Y%m%d_%H%M%S")
+        slug       = re.sub(r"[^a-z0-9]+", "_", str(label).lower()).strip("_") or "unknown"
+        conf_str   = str(int(confidence)) if confidence else "0"
+        uid        = uuid.uuid4().hex[:6]
+        filename   = f"{trigger}_{conf_str}_{slug}_{ts}_{uid}.jpg"
+        dest       = os.path.join(SHADOW_DIR, filename)
+
+        with open(dest, "wb") as fh:
+            fh.write(image_bytes)
+
+        log.info("shadow_save_ok", extra={"data": {
+            "filename":  filename,
+            "bytes":     len(image_bytes),
+            "trigger":   trigger,
+            "label":     label,
+            "conf":      confidence,
+        }})
+    except Exception as exc:
+        # Intentionally silent — a disk error must never crash the request
+        log.warning("shadow_save_fail", extra={"data": {
+            "trigger": trigger,
+            "error":   str(exc),
+        }})
+
+
+def _trigger_shadow_save(image_bytes: bytes, label: str,
+                         confidence, trigger: str) -> None:
+    """Launch _shadow_save in a daemon thread so it never blocks the response."""
+    t = threading.Thread(
+        target=_shadow_save,
+        args=(image_bytes, label, confidence, trigger),
+        daemon=True,
+        name=f"shadow-save-{trigger}",
+    )
+    t.start()
+
+
 SYSTEM_PROMPT = """IMPORTANT: Always respond in English unless the farmer writes in Telugu, Hindi, or Tamil first. Default language is English.
 
 You are ChilliGuru, a friendly farming assistant for chilli farmers in Andhra Pradesh and Telangana. Talk like a trusted friend — simple, warm, easy to understand.
@@ -312,6 +374,13 @@ def _detect_inner():
                     result = call_hf_detector(image_bytes)
                     # Intentional guardrail rejection — return immediately, don't fall back
                     if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
+                        # Data flywheel: non-chilli guardrail image → shadow dataset
+                        _trigger_shadow_save(
+                            image_bytes,
+                            label="non_chilli",
+                            confidence=0,
+                            trigger="phase3",
+                        )
                         return jsonify(result)
                     if result and "error" in result:
                         log.warning("hf_result_error_fallback", extra={"data": {
@@ -366,6 +435,14 @@ def _detect_inner():
             confidence = top.get("confidence", 0)
             kind       = top.get("type", "pest")
             detection  = top
+            # Data flywheel: low-confidence detections → shadow dataset for review
+            if is_low:
+                _trigger_shadow_save(
+                    image_bytes,
+                    label=label,
+                    confidence=confidence,
+                    trigger="low_conf",
+                )
             low_note   = (
                 "\nNOTE: This is a low-confidence detection. "
                 "Mention to the farmer that you are not fully certain and ask one short clarifying question."

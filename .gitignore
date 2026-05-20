@@ -19,3 +19,7 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Shadow dataset — farmer images captured for active learning (runtime data, not committed)
+static/uploads/shadow_dataset/*
+!static/uploads/shadow_dataset/.gitkeep
