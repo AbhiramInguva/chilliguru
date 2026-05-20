@@ -1,22 +1,30 @@
 """
-detector.py — ChilliGuru Pest & Disease Detector
-Model: VIT-AP (YOLO + ViT backbone, 18-class chilli pest & disease detector)
-Falls back to Groq questions when confidence is low.
+detector.py — ChilliGuru Pest & Disease Detector (3-Phase Cascade Pipeline)
+Architecture:
+  Phase 1: Primary chilli detector (chilli_pest_model.pt, 18-class)
+  Phase 2: IP102 fallback model (ip102_model.pt, 5-class generic pests)
+  Phase 3: Generic crop anomaly detector (yolov8n.pt, non-pest rejection)
+Each phase runs in isolated try/except for fault tolerance.
 """
 
 from pathlib import Path
 import warnings
 warnings.filterwarnings("ignore")
 
-CUSTOM_MODEL_PATH    = "chilli_pest_model.pt"
+PHASE1_MODEL_PATH    = "chilli_pest_model.pt"
+PHASE2_MODEL_PATH    = "ip102_model.pt"
+PHASE3_MODEL_PATH    = "yolov8n.pt"
 CONFIDENCE_THRESHOLD = 45.0
+PHASE1_MIN_CONF      = 0.40  # 40% — Phase 1 requirement
 
-if not Path(CUSTOM_MODEL_PATH).exists():
-    print(f"WARNING: {CUSTOM_MODEL_PATH} not found — pest detector disabled.", flush=True)
+if not Path(PHASE1_MODEL_PATH).exists():
+    print(f"WARNING: {PHASE1_MODEL_PATH} not found — Phase 1 disabled.", flush=True)
 
-_custom_model = None
+_phase1_model = None
+_phase2_model = None
+_phase3_model = None
 
-# ── 18 class labels from VIT-AP model ────────────────────────────────────────
+# ── 18 class labels from VIT-AP model (Phase 1) ────────────────────────────────
 CLASS_NAMES = [
     "Black Thrips-Leafs",                       # 0
     "Black Thrips-Pest",                         # 1
@@ -37,6 +45,15 @@ CLASS_NAMES = [
     "Red Mites leafs",                           # 16
     "White Fly-Leafs",                           # 17
 ]
+
+# ── IP102 to ChilliGuru class mapping (Phase 2 fallback) ──────────────────────
+IP102_CLASS_MAPPING = {
+    "aphid":              ("Pest-Myzus persicae (Aphids)",          "పేను పురుగు",                        "pest"),
+    "thrips":             ("Black Thrips-Pest",                     "నల్ల తుమ్మెద పురుగు",               "pest"),
+    "tobaccocaterpillar": ("Pest-Spodoptera litura (Armyworm)",     "గొంగళి పురుగు",                     "pest"),
+    "whitefly":           ("Pest-White Fly",                        "తెల్ల ఈగ పురుగు",                    "pest"),
+    "mites":              ("Pest-Red Mites",                        "ఎర్ర సాలె పురుగు",                   "pest"),
+}
 
 def _get_friendly_name(raw_label):
     """Map raw model label → (friendly English name, Telugu name, type)."""
@@ -140,19 +157,54 @@ PEST_INFO = {
 }
 
 def _load_custom():
-    global _custom_model
-    if _custom_model is not None:
-        return _custom_model
-    if not Path(CUSTOM_MODEL_PATH).exists():
+    """Phase 1: Load primary chilli detector (VIT-AP)."""
+    global _phase1_model
+    if _phase1_model is not None:
+        return _phase1_model
+    if not Path(PHASE1_MODEL_PATH).exists():
         return None
-    print("   Loading VIT-AP chilli model...", end="", flush=True)
+    print("   [Phase 1] Loading VIT-AP chilli model...", end="", flush=True)
     try:
         from ultralytics import YOLO
-        _custom_model = YOLO(CUSTOM_MODEL_PATH)
+        _phase1_model = YOLO(PHASE1_MODEL_PATH)
         print(" Ready!")
-        return _custom_model
+        return _phase1_model
     except Exception as e:
-        print(f" Failed ({e})")
+        print(f" Failed ({e})", flush=True)
+        return None
+
+def _load_ip102_model():
+    """Phase 2: Load IP102 generic pest detector (fallback)."""
+    global _phase2_model
+    if _phase2_model is not None:
+        return _phase2_model
+    if not Path(PHASE2_MODEL_PATH).exists():
+        return None
+    print("   [Phase 2] Loading IP102 fallback model...", end="", flush=True)
+    try:
+        from ultralytics import YOLO
+        _phase2_model = YOLO(PHASE2_MODEL_PATH)
+        print(" Ready!")
+        return _phase2_model
+    except Exception as e:
+        print(f" Failed ({e})", flush=True)
+        return None
+
+def _load_yolov8n_model():
+    """Phase 3: Load generic YOLOv8n for non-chilli crop anomaly rejection."""
+    global _phase3_model
+    if _phase3_model is not None:
+        return _phase3_model
+    if not Path(PHASE3_MODEL_PATH).exists():
+        return None
+    print("   [Phase 3] Loading YOLOv8n generic detector...", end="", flush=True)
+    try:
+        from ultralytics import YOLO
+        _phase3_model = YOLO(PHASE3_MODEL_PATH)
+        print(" Ready!")
+        return _phase3_model
+    except Exception as e:
+        print(f" Failed ({e})", flush=True)
         return None
 
 def _resolve_label(raw_label, cls_id):
@@ -173,52 +225,169 @@ def _sev(c):
     return "High" if c >= 80 else ("Medium" if c >= 50 else "Low (not very sure)")
 
 def detect(image_path):
+    """
+    3-Phase Cascaded Inference Engine:
+    Phase 1: Primary chilli detector (confidence ≥ 0.40)
+    Phase 2: IP102 fallback (if Phase 1 fails or low conf)
+    Phase 3: Generic YOLOv8n (anomaly rejection if Phase 2 fails)
+    """
     img = Path(image_path)
     if not img.exists():
         return {"success": False, "error": f"Image not found: {image_path}"}
 
-    custom = _load_custom()
-    if not custom:
-        return {"success": False, "error": "VIT-AP model could not be loaded"}
-
+    # ──────────────────────────────────────────────────────────────────────────
+    # PHASE 1: Primary Chilli Detector
+    # ──────────────────────────────────────────────────────────────────────────
+    phase1_result = None
     try:
-        results    = custom.predict(str(img), verbose=False, conf=0.10)
-        boxes      = results[0].boxes
-        names_map  = results[0].names  # {int: str} from model
+        phase1_model = _load_custom()
+        if phase1_model:
+            results = phase1_model.predict(str(img), verbose=False, conf=0.10)
+            boxes = results[0].boxes
+            names_map = results[0].names
 
-        if boxes is None or len(boxes) == 0:
-            return {"success": False, "error": "No detections", "low_confidence": True}
+            if boxes is not None and len(boxes) > 0:
+                detections = []
+                for box in boxes:
+                    cls_id = int(box.cls[0])
+                    model_name = names_map.get(cls_id, str(cls_id))
+                    confidence = float(box.conf[0]) * 100.0
+                    raw_label = _resolve_label(model_name, cls_id)
+                    english, telugu, kind = _get_friendly_name(raw_label)
+                    display = f"{english} [{telugu}]" if telugu else english
+                    info = PEST_INFO.get(raw_label, {"symptoms": f"Damage by {english}", "damage": ""})
+                    detections.append({
+                        "label": display,
+                        "raw_label": raw_label,
+                        "type": kind,
+                        "confidence": float(round(confidence, 1)),
+                        "severity": _sev(confidence),
+                        "symptoms": info["symptoms"],
+                        "damage": info["damage"],
+                    })
 
-        detections = []
-        for box in boxes:
-            cls_id     = int(box.cls[0])
-            model_name = names_map.get(cls_id, str(cls_id))
-            confidence = round(float(box.conf[0]) * 100, 1)
-            raw_label  = _resolve_label(model_name, cls_id)
-            english, telugu, kind = _get_friendly_name(raw_label)
-            display    = f"{english} [{telugu}]" if telugu else english
-            info       = PEST_INFO.get(raw_label, {"symptoms": f"Damage by {english}", "damage": ""})
-            detections.append({
-                "label":      display,
-                "raw_label":  raw_label,
-                "type":       kind,
-                "confidence": confidence,
-                "severity":   _sev(confidence),
-                "symptoms":   info["symptoms"],
-                "damage":     info["damage"],
-            })
-
-        detections.sort(key=lambda x: x["confidence"], reverse=True)
-        top = detections[0]
-        return {
-            "success":        True,
-            "top_detection":  top,
-            "all_detections": detections[:3],
-            "model_used":     "VIT-AP ChilliGuru (18-class)",
-            "low_confidence": top["confidence"] < CONFIDENCE_THRESHOLD,
-        }
+                detections.sort(key=lambda x: x["confidence"], reverse=True)
+                top = detections[0]
+                
+                if top["confidence"] >= (PHASE1_MIN_CONF * 100):
+                    phase1_result = {
+                        "success": True,
+                        "top_detection": top,
+                        "all_detections": detections[:3],
+                        "model_used": "Phase 1: VIT-AP ChilliGuru (18-class)",
+                        "low_confidence": top["confidence"] < CONFIDENCE_THRESHOLD,
+                        "phase": 1,
+                    }
     except Exception as e:
-        return {"success": False, "error": "exception", "message": str(e)}
+        print(f"   [Phase 1] Error: {e}", flush=True)
+
+    if phase1_result and phase1_result["success"]:
+        return phase1_result
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # PHASE 2: IP102 Fallback Model
+    # ──────────────────────────────────────────────────────────────────────────
+    phase2_result = None
+    try:
+        phase2_model = _load_ip102_model()
+        if phase2_model:
+            results = phase2_model.predict(str(img), verbose=False, conf=0.10)
+            boxes = results[0].boxes
+            names_map = results[0].names
+
+            if boxes is not None and len(boxes) > 0:
+                detections = []
+                for box in boxes:
+                    cls_id = int(box.cls[0])
+                    model_name = str(names_map.get(cls_id, cls_id)).lower()
+                    confidence = float(box.conf[0]) * 100.0
+                    
+                    # Map IP102 class to ChilliGuru class
+                    if model_name in IP102_CLASS_MAPPING:
+                        raw_label, telugu, kind = IP102_CLASS_MAPPING[model_name]
+                        english, _, _ = _get_friendly_name(raw_label)
+                    else:
+                        english = model_name
+                        telugu = ""
+                        kind = "pest"
+                    
+                    display = f"{english} [{telugu}]" if telugu else english
+                    info = PEST_INFO.get(raw_label if model_name in IP102_CLASS_MAPPING else model_name,
+                                         {"symptoms": f"Detected by IP102: {english}", "damage": ""})
+                    detections.append({
+                        "label": display,
+                        "raw_label": model_name,
+                        "type": kind,
+                        "confidence": float(round(confidence, 1)),
+                        "severity": _sev(confidence),
+                        "symptoms": info.get("symptoms", f"Damage by {english}"),
+                        "damage": info.get("damage", ""),
+                    })
+
+                detections.sort(key=lambda x: x["confidence"], reverse=True)
+                top = detections[0]
+                
+                if top["confidence"] >= 30:
+                    phase2_result = {
+                        "success": True,
+                        "top_detection": top,
+                        "all_detections": detections[:3],
+                        "model_used": "Phase 2: IP102 Generic Pest Detector (5-class)",
+                        "low_confidence": top["confidence"] < CONFIDENCE_THRESHOLD,
+                        "phase": 2,
+                    }
+    except Exception as e:
+        print(f"   [Phase 2] Error: {e}", flush=True)
+
+    if phase2_result and phase2_result["success"]:
+        return phase2_result
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # PHASE 3: Generic YOLOv8n (Anomaly Rejection Check)
+    # ──────────────────────────────────────────────────────────────────────────
+    phase3_result = None
+    try:
+        phase3_model = _load_yolov8n_model()
+        if phase3_model:
+            results = phase3_model.predict(str(img), verbose=False, conf=0.10)
+            boxes = results[0].boxes
+            
+            if boxes is not None and len(boxes) > 0:
+                has_detection = int(len(boxes)) > 0
+                phase3_result = {
+                    "success": True,
+                    "top_detection": None,
+                    "all_detections": [],
+                    "model_used": "Phase 3: YOLOv8n Generic Detector (Anomaly Check)",
+                    "low_confidence": True,
+                    "phase": 3,
+                    "message": "No specific pest detected (YOLOv8n generic check)" if not has_detection else "Generic object detected",
+                }
+            else:
+                phase3_result = {
+                    "success": True,
+                    "top_detection": None,
+                    "all_detections": [],
+                    "model_used": "Phase 3: YOLOv8n Generic Detector (No anomaly)",
+                    "low_confidence": True,
+                    "phase": 3,
+                    "message": "No anomalies detected",
+                }
+    except Exception as e:
+        print(f"   [Phase 3] Error: {e}", flush=True)
+
+    if phase3_result and phase3_result["success"]:
+        return phase3_result
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # All phases failed or unavailable
+    # ──────────────────────────────────────────────────────────────────────────
+    return {
+        "success": False,
+        "error": "No models available for detection",
+        "low_confidence": True,
+        "phase": 0,
+    }
 
 def format_for_openai(result, user_description=""):
     if not result.get("success"):
