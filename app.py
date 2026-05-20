@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import time
 import traceback
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -25,6 +26,46 @@ except Exception as exc:
     hf_connect_error = str(exc)
     print(f"HF Space connection failed at startup: {hf_connect_error}", flush=True)
 
+# ── Circuit Breaker state ─────────────────────────────────────────────────────
+HF_CIRCUIT_OPEN      = False
+HF_FAILURE_COUNT     = 0
+HF_RECOVERY_TIME     = None   # datetime.time when the circuit may close again
+CB_FAILURE_THRESHOLD = 3      # consecutive failures before opening
+CB_COOLDOWN_SECS     = 60     # seconds to wait before retrying
+
+
+def _cb_is_open():
+    """Return True when the circuit is open and the cooldown has not yet elapsed."""
+    global HF_CIRCUIT_OPEN, HF_FAILURE_COUNT, HF_RECOVERY_TIME
+    if not HF_CIRCUIT_OPEN:
+        return False
+    if time.monotonic() >= HF_RECOVERY_TIME:
+        # Cooldown elapsed — move to half-open: allow one probe through
+        print("[CircuitBreaker] Cooldown elapsed, resetting to closed.", flush=True)
+        HF_CIRCUIT_OPEN  = False
+        HF_FAILURE_COUNT = 0
+        HF_RECOVERY_TIME = None
+        return False
+    return True
+
+
+def _cb_record_success():
+    global HF_FAILURE_COUNT
+    HF_FAILURE_COUNT = 0
+
+
+def _cb_record_failure():
+    global HF_CIRCUIT_OPEN, HF_FAILURE_COUNT, HF_RECOVERY_TIME
+    HF_FAILURE_COUNT += 1
+    if HF_FAILURE_COUNT >= CB_FAILURE_THRESHOLD:
+        HF_CIRCUIT_OPEN  = True
+        HF_RECOVERY_TIME = time.monotonic() + CB_COOLDOWN_SECS
+        print(
+            f"[CircuitBreaker] OPEN after {HF_FAILURE_COUNT} failures. "
+            f"Retry after {CB_COOLDOWN_SECS}s.",
+            flush=True,
+        )
+
 
 def get_client():
     return Groq(api_key=os.getenv("GROQ_API_KEY", ""))
@@ -43,10 +84,12 @@ def call_hf_detector(image_bytes):
         print("Calling HF Space...", flush=True)
         result = hf_client.predict(handle_file(tmp_path), api_name="/predict")
         print(f"HF result: {result}", flush=True)
+        _cb_record_success()
         return result if isinstance(result, dict) else {"result": str(result)}
     except Exception as exc:
         print(f"HF detector exception: {exc}", flush=True)
         traceback.print_exc()
+        _cb_record_failure()
         return {"error": str(exc)}
     finally:
         if tmp_path and os.path.exists(tmp_path):
@@ -130,21 +173,27 @@ def _detect_inner():
             return jsonify({"error": "Empty file"}), 400
 
         result = None
-        # Try HF space call first
-        try:
-            if hf_client is not None:
-                result = call_hf_detector(image_bytes)
-                # Intentional guardrail rejection — return immediately, don't fall back
-                if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
-                    return jsonify(result)
-                if result and "error" in result:
-                    print(f"HF space error: {result['error']}. Falling back to local...", flush=True)
-                    result = None
-            else:
-                print("HF client not connected. Falling back to local...", flush=True)
-        except Exception as exc:
-            print(f"HF Space unreachable: {exc}. Falling back to local...", flush=True)
-            result = None
+        # Try HF space call first (skip if circuit is open)
+        if _cb_is_open():
+            print(
+                f"[CircuitBreaker] Circuit OPEN — skipping HF call, routing to local engine.",
+                flush=True,
+            )
+        else:
+            try:
+                if hf_client is not None:
+                    result = call_hf_detector(image_bytes)
+                    # Intentional guardrail rejection — return immediately, don't fall back
+                    if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
+                        return jsonify(result)
+                    if result and "error" in result:
+                        print(f"HF space error: {result['error']}. Falling back to local...", flush=True)
+                        result = None
+                else:
+                    print("HF client not connected. Falling back to local...", flush=True)
+            except Exception as exc:
+                print(f"HF Space unreachable: {exc}. Falling back to local...", flush=True)
+                result = None
 
         if result is None:
             # Fall back to local 3-phase cascade engine in detector.py
