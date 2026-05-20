@@ -62,8 +62,9 @@ BAKED_NAMES: dict[int, str] = (
 NUM_BAKED = len(BAKED_NAMES)
 
 if NUM_BAKED == 15:
-    # Force display strings to match model_info (covers wrong / stale strings in .pt)
-    model.names = {i: V2_CLASSES[i] for i in range(len(V2_CLASSES))}
+    # Force display strings to match model_info (Ultralytics ≥8.1: model.names is read-only)
+    name_map = {i: V2_CLASSES[i] for i in range(len(V2_CLASSES))}
+    model.model.names = name_map
 
 
 def resolve_detection_class(cls_id: int) -> tuple[int, str, str]:
