@@ -384,6 +384,7 @@
   }
 
   /* ── Detection card component ───────────────────────────── */
+  .detection-card,
   .det-card {
     background: var(--c-panel);
     border: 2px solid var(--c-border);
@@ -393,11 +394,13 @@
     margin-bottom: 12px;
   }
 
+  .detection-card.low-conf,
   .det-card.low-conf {
     border-left-color: var(--c-warn);
     background: var(--c-warn-bg);
   }
 
+  .warning-badge-inline,
   .badge-low-conf {
     display: inline-flex;
     align-items: center;
@@ -579,6 +582,7 @@
     gap: 8px;
   }
 
+  .action-btn-accessible,
   .img-btn {
     width: var(--touch-lg);
     height: var(--touch-lg);
@@ -596,6 +600,7 @@
     -webkit-tap-highlight-color: transparent;
   }
 
+  .action-btn-accessible:hover, .action-btn-accessible:focus-visible,
   .img-btn:hover, .img-btn:focus-visible {
     border-color: var(--c-leaf);
     background: var(--c-leaf-bg);
@@ -603,6 +608,7 @@
     outline: none;
   }
 
+  .action-btn-accessible:active,
   .img-btn:active { transform: scale(0.94); }
 
   .send-btn {
@@ -1119,10 +1125,10 @@ LANGUAGE: reply in the same language the user writes in.`;
     const lowClass = isLow ? ' low' : '';
 
     const warnBadge = isLow
-      ? `<div class="badge-low-conf">⚠️ Low Confidence Warning</div>`
+      ? `<div class="warning-badge-inline">⚠️ Low Confidence Warning</div>`
       : '';
 
-    return `<div class="det-card${isLow ? ' low-conf' : ''}">` +
+    return `<div class="detection-card${isLow ? ' low-conf' : ''}">` +
       warnBadge +
       `<div class="det-pest-name">🔍 ${english}</div>` +
       (telugu ? `<div class="det-telugu">${telugu}</div>` : '') +
