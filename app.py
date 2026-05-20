@@ -1,5 +1,7 @@
 import json
+import logging
 import os
+import sys
 import tempfile
 import time
 import traceback
@@ -9,22 +11,42 @@ from gradio_client import Client, handle_file
 from groq import Groq
 import detector
 
+# ── Structured JSON logger ────────────────────────────────────────────────────
+class _JsonFormatter(logging.Formatter):
+    def format(self, record):
+        payload = {
+            "ts":    self.formatTime(record, "%Y-%m-%dT%H:%M:%SZ"),
+            "level": record.levelname,
+            "event": record.getMessage(),
+        }
+        if hasattr(record, "data") and isinstance(record.data, dict):
+            payload.update(record.data)
+        if record.exc_info:
+            payload["traceback"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+_handler = logging.StreamHandler(sys.stdout)
+_handler.setFormatter(_JsonFormatter())
+logging.root.setLevel(logging.INFO)
+logging.root.handlers = [_handler]
+log = logging.getLogger("chilliguru")
+
 MODEL = "llama-3.3-70b-versatile"
 MAX_TOKENS = 1200
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
 
-print("Connecting to HF Space...", flush=True)
+log.info("hf_connect_start")
 hf_client = None
 hf_connect_error = None
 try:
     hf_token = os.environ.get("HF_TOKEN")
     hf_client = Client("inguvaaa/comprehensive", token=hf_token, verbose=False)
-    print("HF Space connected.", flush=True)
+    log.info("hf_connect_ok")
 except Exception as exc:
     hf_connect_error = str(exc)
-    print(f"HF Space connection failed at startup: {hf_connect_error}", flush=True)
+    log.error("hf_connect_fail", extra={"data": {"error_message": hf_connect_error}})
 
 # ── Circuit Breaker state ─────────────────────────────────────────────────────
 HF_CIRCUIT_OPEN      = False
@@ -40,8 +62,7 @@ def _cb_is_open():
     if not HF_CIRCUIT_OPEN:
         return False
     if time.monotonic() >= HF_RECOVERY_TIME:
-        # Cooldown elapsed — move to half-open: allow one probe through
-        print("[CircuitBreaker] Cooldown elapsed, resetting to closed.", flush=True)
+        log.info("circuit_breaker_reset")
         HF_CIRCUIT_OPEN  = False
         HF_FAILURE_COUNT = 0
         HF_RECOVERY_TIME = None
@@ -60,11 +81,10 @@ def _cb_record_failure():
     if HF_FAILURE_COUNT >= CB_FAILURE_THRESHOLD:
         HF_CIRCUIT_OPEN  = True
         HF_RECOVERY_TIME = time.monotonic() + CB_COOLDOWN_SECS
-        print(
-            f"[CircuitBreaker] OPEN after {HF_FAILURE_COUNT} failures. "
-            f"Retry after {CB_COOLDOWN_SECS}s.",
-            flush=True,
-        )
+        log.warning("circuit_breaker_open", extra={"data": {
+            "failure_count": HF_FAILURE_COUNT,
+            "cooldown_secs": CB_COOLDOWN_SECS,
+        }})
 
 
 def get_client():
@@ -76,19 +96,24 @@ def call_hf_detector(image_bytes):
         return {"error": f"HF client unavailable: {hf_connect_error or 'startup connection failed'}"}
 
     tmp_path = None
+    _t_hf = time.time()
     try:
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             tmp.write(image_bytes)
             tmp_path = tmp.name
 
-        print("Calling HF Space...", flush=True)
+        log.info("hf_call_start")
         result = hf_client.predict(handle_file(tmp_path), api_name="/predict")
-        print(f"HF result: {result}", flush=True)
+        hf_ms = round((time.time() - _t_hf) * 1000)
         _cb_record_success()
+        log.info("hf_call_ok", extra={"data": {"duration_ms": hf_ms, "phase": "hf"}})
         return result if isinstance(result, dict) else {"result": str(result)}
     except Exception as exc:
-        print(f"HF detector exception: {exc}", flush=True)
-        traceback.print_exc()
+        log.error("hf_call_error", extra={"data": {
+            "error_message": str(exc),
+            "duration_ms":   round((time.time() - _t_hf) * 1000),
+            "phase":         "hf",
+        }}, exc_info=True)
         _cb_record_failure()
         return {"error": str(exc)}
     finally:
@@ -144,11 +169,19 @@ def chat():
 
 @app.route("/detect", methods=["POST"])
 def detect():
+    _t0 = time.time()
     try:
-        return _detect_inner()
+        resp = _detect_inner()
+        log.info("detect_complete", extra={"data": {
+            "duration_ms": round((time.time() - _t0) * 1000),
+            "status_code": resp.status_code,
+        }})
+        return resp
     except Exception as e:
-        print(f"Unhandled /detect error: {e}", flush=True)
-        traceback.print_exc()
+        log.error("detect_unhandled_error", extra={"data": {
+            "error_message": str(e),
+            "duration_ms":   round((time.time() - _t0) * 1000),
+        }}, exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 def _detect_inner():
@@ -175,10 +208,7 @@ def _detect_inner():
         result = None
         # Try HF space call first (skip if circuit is open)
         if _cb_is_open():
-            print(
-                f"[CircuitBreaker] Circuit OPEN — skipping HF call, routing to local engine.",
-                flush=True,
-            )
+            log.warning("circuit_breaker_skip_hf")
         else:
             try:
                 if hf_client is not None:
@@ -187,31 +217,47 @@ def _detect_inner():
                     if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
                         return jsonify(result)
                     if result and "error" in result:
-                        print(f"HF space error: {result['error']}. Falling back to local...", flush=True)
+                        log.warning("hf_result_error_fallback", extra={"data": {
+                            "error_message": result["error"],
+                        }})
                         result = None
                 else:
-                    print("HF client not connected. Falling back to local...", flush=True)
+                    log.warning("hf_client_unavailable_fallback")
             except Exception as exc:
-                print(f"HF Space unreachable: {exc}. Falling back to local...", flush=True)
+                log.error("hf_unreachable_fallback", extra={"data": {"error_message": str(exc)}},
+                          exc_info=True)
                 result = None
 
         if result is None:
-            # Fall back to local 3-phase cascade engine in detector.py
-            print("Running local 3-phase cascade engine...", flush=True)
+            log.info("local_cascade_start")
+            _t_local = time.time()
             tmp_path = None
             try:
                 with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                     tmp.write(image_bytes)
                     tmp_path = tmp.name
                 result = detector.detect(tmp_path)
+                log.info("local_cascade_ok", extra={"data": {
+                    "duration_ms": round((time.time() - _t_local) * 1000),
+                    "phase":       result.get("phase") if isinstance(result, dict) else None,
+                }})
             except Exception as local_exc:
-                print(f"Local detector failed: {local_exc}", flush=True)
+                log.error("local_cascade_error", extra={"data": {
+                    "error_message": str(local_exc),
+                    "duration_ms":   round((time.time() - _t_local) * 1000),
+                }}, exc_info=True)
                 result = {"error": str(local_exc)}
             finally:
                 if tmp_path and os.path.exists(tmp_path):
                     os.unlink(tmp_path)
 
-        print(f"Final detector result: {result}", flush=True)
+        top_label = (result.get("top_detection", {}) or {}).get("label") if isinstance(result, dict) else None
+        log.info("detector_result", extra={"data": {
+            "phase":       result.get("phase") if isinstance(result, dict) else None,
+            "top_label":   top_label,
+            "success":     result.get("success") if isinstance(result, dict) else None,
+            "low_confidence": result.get("low_confidence") if isinstance(result, dict) else None,
+        }})
 
         top    = result.get("top_detection") if isinstance(result, dict) else None
         is_low = result.get("low_confidence", False) if isinstance(result, dict) else True
@@ -242,7 +288,7 @@ def _detect_inner():
             is_low = True
             err = result.get("error", "") if isinstance(result, dict) else ""
             if err:
-                print(f"Detector error: {err}", flush=True)
+                log.warning("detector_error", extra={"data": {"error_message": err}})
             groq_context = (
                 f"A farmer uploaded a photo of their chilli plant. "
                 f"They described: '{user_msg}'. "

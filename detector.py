@@ -7,9 +7,12 @@ Architecture:
 Each phase runs in isolated try/except for fault tolerance.
 """
 
+import logging
 from pathlib import Path
 import warnings
 warnings.filterwarnings("ignore")
+
+log = logging.getLogger("chilliguru.detector")
 
 PHASE1_MODEL_PATH    = "chilli_pest_model.pt"
 PHASE2_MODEL_PATH    = "ip102_model.pt"
@@ -18,7 +21,7 @@ CONFIDENCE_THRESHOLD = 45.0
 PHASE1_MIN_CONF      = 0.40  # 40% — Phase 1 requirement
 
 if not Path(PHASE1_MODEL_PATH).exists():
-    print(f"WARNING: {PHASE1_MODEL_PATH} not found — Phase 1 disabled.", flush=True)
+    log.warning("phase1_model_missing", extra={"data": {"path": PHASE1_MODEL_PATH}})
 
 _phase1_model = None
 _phase2_model = None
@@ -163,14 +166,14 @@ def _load_custom():
         return _phase1_model
     if not Path(PHASE1_MODEL_PATH).exists():
         return None
-    print("   [Phase 1] Loading VIT-AP chilli model...", end="", flush=True)
+    log.info("phase1_model_loading")
     try:
         from ultralytics import YOLO
         _phase1_model = YOLO(PHASE1_MODEL_PATH)
-        print(" Ready!")
+        log.info("phase1_model_ready")
         return _phase1_model
     except Exception as e:
-        print(f" Failed ({e})", flush=True)
+        log.error("phase1_model_load_failed", extra={"data": {"error_message": str(e)}})
         return None
 
 def _load_ip102_model():
@@ -180,14 +183,14 @@ def _load_ip102_model():
         return _phase2_model
     if not Path(PHASE2_MODEL_PATH).exists():
         return None
-    print("   [Phase 2] Loading IP102 fallback model...", end="", flush=True)
+    log.info("phase2_model_loading")
     try:
         from ultralytics import YOLO
         _phase2_model = YOLO(PHASE2_MODEL_PATH)
-        print(" Ready!")
+        log.info("phase2_model_ready")
         return _phase2_model
     except Exception as e:
-        print(f" Failed ({e})", flush=True)
+        log.error("phase2_model_load_failed", extra={"data": {"error_message": str(e)}})
         return None
 
 def _load_yolov8n_model():
@@ -197,14 +200,14 @@ def _load_yolov8n_model():
         return _phase3_model
     if not Path(PHASE3_MODEL_PATH).exists():
         return None
-    print("   [Phase 3] Loading YOLOv8n generic detector...", end="", flush=True)
+    log.info("phase3_model_loading")
     try:
         from ultralytics import YOLO
         _phase3_model = YOLO(PHASE3_MODEL_PATH)
-        print(" Ready!")
+        log.info("phase3_model_ready")
         return _phase3_model
     except Exception as e:
-        print(f" Failed ({e})", flush=True)
+        log.error("phase3_model_load_failed", extra={"data": {"error_message": str(e)}})
         return None
 
 def _resolve_label(raw_label, cls_id):
@@ -273,7 +276,7 @@ def detect(image_path):
                     "low_confidence": True
                 }
     except Exception as e:
-        print(f"   [OOD Preprocessing] YOLOv8n check error: {e}", flush=True)
+        log.error("ood_check_error", extra={"data": {"error_message": str(e)}})
 
     # ──────────────────────────────────────────────────────────────────────────
     # PHASE 1: Primary Chilli Detector
@@ -329,7 +332,7 @@ def detect(image_path):
                         "phase": 1,
                     }
     except Exception as e:
-        print(f"   [Phase 1] Error: {e}", flush=True)
+        log.error("phase1_inference_error", extra={"data": {"error_message": str(e)}})
 
     if phase1_result and phase1_result["success"]:
         return phase1_result
@@ -397,7 +400,7 @@ def detect(image_path):
                         "phase": 2,
                     }
     except Exception as e:
-        print(f"   [Phase 2] Error: {e}", flush=True)
+        log.error("phase2_inference_error", extra={"data": {"error_message": str(e)}})
 
     if phase2_result and phase2_result["success"]:
         return phase2_result
@@ -438,7 +441,7 @@ def detect(image_path):
                     "model_used": "Phase 3: YOLOv8n Generic Detector (Anomaly Check)"
                 }
     except Exception as e:
-        print(f"   [Phase 3] Error: {e}", flush=True)
+        log.error("phase3_inference_error", extra={"data": {"error_message": str(e)}})
 
     if phase3_result is not None:
         return phase3_result
