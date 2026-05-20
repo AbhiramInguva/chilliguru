@@ -62,6 +62,8 @@ limiter = Limiter(
     app=app,
     storage_uri="memory://",
     default_limits=[],
+    # Thread-safe in-memory rate-limiting (production-ready for single Render container)
+    # For distributed microservices, migrate to Redis: storage_uri="redis://localhost:6379"
 )
 
 @app.errorhandler(429)
@@ -77,7 +79,7 @@ hf_client = None
 hf_connect_error = None
 try:
     hf_token = os.environ.get("HF_TOKEN")
-    hf_client = Client("inguvaaa/comprehensive", token=hf_token, verbose=False)
+    hf_client = Client("inguvaaa/comprehensive", token=hf_token, verbose=False, headers={"timeout": "30"})
     log.info("hf_connect_ok")
 except Exception as exc:
     hf_connect_error = str(exc)
@@ -397,12 +399,8 @@ def _detect_inner():
         if result is None:
             log.info("local_cascade_start")
             _t_local = time.time()
-            tmp_path = None
             try:
-                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                    tmp.write(image_bytes)
-                    tmp_path = tmp.name
-                result = detector.detect(tmp_path)
+                result = detector.detect_from_bytes(image_bytes, message=user_msg)
                 log.info("local_cascade_ok", extra={"data": {
                     "duration_ms": round((time.time() - _t_local) * 1000),
                     "phase":       result.get("phase") if isinstance(result, dict) else None,
@@ -413,9 +411,6 @@ def _detect_inner():
                     "duration_ms":   round((time.time() - _t_local) * 1000),
                 }}, exc_info=True)
                 result = {"error": str(local_exc)}
-            finally:
-                if tmp_path and os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
 
         top_label = (result.get("top_detection", {}) or {}).get("label") if isinstance(result, dict) else None
         log.info("detector_result", extra={"data": {
@@ -493,4 +488,4 @@ def _detect_inner():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    app.run(debug=True, host="0.0.0.0", port=port)
+    app.run(debug=False, host="0.0.0.0", port=port)

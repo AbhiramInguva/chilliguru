@@ -1,21 +1,10 @@
-"""
-Gradio Space entrypoint — upload as app.py on inguvaaa/chilliguru-detector.
-
-Expects in the Space repo root:
-  - chilli_pest_v2.pt
-  - model_info.json
-
-Always surfaces **canonical V2 labels** from model_info.json. If the checkpoint
-was trained with 18 Roboflow classes, remaps cls ids → 15 merged ids at inference.
-"""
-from __future__ import annotations
-
 import json
 from pathlib import Path
 
 import gradio as gr
 from PIL import Image
-from ultralytics import YOLO
+
+import detector
 
 MODEL_PATH = Path(__file__).resolve().parent / "chilli_pest_v2.pt"
 INFO_PATH = Path(__file__).resolve().parent / "model_info.json"
@@ -42,18 +31,15 @@ CLASS_MAP_18_TO_15: dict[int, int] = {
     17: 14,
 }
 
-model = YOLO(str(MODEL_PATH))
+def _get_model():
+    """Lazy-load primary chilli model from singleton cache in detector.py."""
+    model = detector.get_model(1)
+    if model is None:
+        from ultralytics import YOLO
+        model = YOLO(str(MODEL_PATH))
+    return model
 
-_yolo_model = None
-def _load_yolo():
-    global _yolo_model
-    if _yolo_model is None:
-        p3 = Path(__file__).resolve().parent / "yolov8n.pt"
-        if p3.exists():
-            _yolo_model = YOLO(str(p3))
-        else:
-            _yolo_model = YOLO("yolov8n.pt")
-    return _yolo_model
+model = _get_model()
 
 with open(INFO_PATH, encoding="utf-8") as f:
     MODEL_INFO = json.load(f)
@@ -106,7 +92,7 @@ def predict(image: Image.Image | None):
 
     # ── Preprocessing / Validation: Out-of-Domain Guardrail ──────────────────
     try:
-        yolo = _load_yolo()
+        yolo = detector.get_model(3)
         if yolo:
             results = yolo.predict(image, verbose=False, conf=0.10)
             boxes = results[0].boxes
