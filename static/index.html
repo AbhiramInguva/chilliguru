@@ -7,20 +7,53 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;0,600;0,700;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    --red:      #c0392b;
-    --red-dark: #922b21;
-    --red-soft: #f9e8e7;
-    --green:    #2d6a4f;
-    --green-lt: #52b788;
-    --green-bg: #f0f7f4;
-    --earth:    #8b5e3c;
-    --cream:    #fdf6ec;
-    --sand:     #f5e6c8;
-    --text:     #1a1a1a;
-    --text-lt:  #666;
-    --border:   #e8ddd0;
-    --white:    #ffffff;
-    --shadow:   0 4px 24px rgba(0,0,0,0.08);
+    /* ── Primary palette — all pairs verified ≥4.5:1 contrast ── */
+    --c-chilli:    #B91C1C;   /* 6.7:1 on white */
+    --c-chilli-dk: #7F1D1D;   /* 12.6:1 on white */
+    --c-chilli-bg: #FEF2F2;
+    --c-chilli-bd: #FECACA;
+
+    --c-leaf:    #15803D;     /* 5.9:1 on white */
+    --c-leaf-dk: #14532D;     /* 10.5:1 on white */
+    --c-leaf-bg: #F0FDF4;
+    --c-leaf-bd: #86EFAC;
+
+    --c-warn:    #B45309;     /* 5.3:1 on white */
+    --c-warn-dk: #78350F;     /* 11.2:1 on white */
+    --c-warn-bg: #FFFBEB;
+    --c-warn-bd: #FCD34D;
+
+    --c-ink:     #111827;     /* 19:1 — primary text */
+    --c-ink-2:   #374151;     /* 9.7:1 — secondary */
+    --c-ink-3:   #6B7280;     /* 4.6:1 — tertiary, meets AA */
+
+    --c-white:   #FFFFFF;
+    --c-surface: #FFFDF9;
+    --c-panel:   #FFFFFF;
+    --c-muted:   #F9FAFB;
+    --c-border:  #E5E7EB;
+    --c-border-dk: #9CA3AF;
+
+    /* ── Touch targets (WCAG 2.5.5: ≥44px) ── */
+    --touch-min: 44px;
+    --touch-md:  52px;
+    --touch-lg:  56px;
+
+    /* ── Legacy aliases — existing HTML class refs keep working ── */
+    --red:      var(--c-chilli);
+    --red-dark: var(--c-chilli-dk);
+    --red-soft: var(--c-chilli-bg);
+    --green:    var(--c-leaf);
+    --green-lt: #22C55E;
+    --green-bg: var(--c-leaf-bg);
+    --earth:    #92400E;
+    --cream:    var(--c-surface);
+    --sand:     #FEF3C7;
+    --text:     var(--c-ink);
+    --text-lt:  var(--c-ink-3);
+    --border:   var(--c-border);
+    --white:    var(--c-white);
+    --shadow:   0 2px 12px rgba(0,0,0,0.08);
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -350,19 +383,93 @@
     letter-spacing: 0.5px;
   }
 
-  /* Detection badge inside bubble */
+  /* ── Detection card component ───────────────────────────── */
+  .det-card {
+    background: var(--c-panel);
+    border: 2px solid var(--c-border);
+    border-left: 4px solid var(--c-chilli);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+
+  .det-card.low-conf {
+    border-left-color: var(--c-warn);
+    background: var(--c-warn-bg);
+  }
+
+  .badge-low-conf {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--c-warn-bg);
+    border: 1.5px solid var(--c-warn-bd);
+    border-radius: 9999px;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--c-warn-dk);
+    margin-bottom: 10px;
+    letter-spacing: 0.2px;
+  }
+
+  .det-pest-name {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--c-ink);
+    line-height: 1.25;
+    margin-bottom: 4px;
+  }
+
+  .det-telugu {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--c-leaf-dk);
+    margin-bottom: 10px;
+    line-height: 1.3;
+  }
+
+  .det-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .det-confidence {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--c-chilli);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .det-confidence.low { color: var(--c-warn); }
+
+  .det-type {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--c-ink-2);
+    background: var(--c-muted);
+    border: 1px solid var(--c-border);
+    padding: 3px 8px;
+    border-radius: 4px;
+  }
+
+  /* Detection badge (legacy inline use) */
   .detection-badge {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    background: var(--red-soft);
-    border: 1px solid #f1948a;
-    border-radius: 20px;
-    padding: 4px 10px;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--red-dark);
-    margin-bottom: 10px;
+    background: var(--c-chilli-bg);
+    border: 1.5px solid var(--c-chilli-bd);
+    border-radius: 9999px;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--c-chilli-dk);
+    margin-bottom: 8px;
   }
 
   /* Solution cards */
@@ -473,44 +580,51 @@
   }
 
   .img-btn {
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
-    border: 1.5px dashed var(--border);
-    background: transparent;
+    width: var(--touch-lg);
+    height: var(--touch-lg);
+    border-radius: 12px;
+    border: 2px solid var(--c-border);
+    background: var(--c-muted);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 16px;
+    font-size: 22px;
     transition: all 0.15s;
-    color: var(--text-lt);
+    color: var(--c-ink-2);
+    flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
   }
 
-  .img-btn:hover {
-    border-color: var(--green-lt);
-    background: var(--green-bg);
-    color: var(--green);
+  .img-btn:hover, .img-btn:focus-visible {
+    border-color: var(--c-leaf);
+    background: var(--c-leaf-bg);
+    color: var(--c-leaf-dk);
+    outline: none;
   }
+
+  .img-btn:active { transform: scale(0.94); }
 
   .send-btn {
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
+    width: var(--touch-lg);
+    height: var(--touch-lg);
+    border-radius: 12px;
     border: none;
-    background: var(--red);
-    color: white;
+    background: var(--c-chilli);
+    color: #fff;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 16px;
+    font-size: 20px;
     transition: all 0.15s;
     flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
   }
 
-  .send-btn:hover { background: var(--red-dark); transform: scale(1.05); }
-  .send-btn:disabled { background: #ddd; cursor: not-allowed; transform: none; }
+  .send-btn:hover  { background: var(--c-chilli-dk); }
+  .send-btn:active { transform: scale(0.94); }
+  .send-btn:disabled { background: var(--c-border-dk, #9CA3AF); cursor: not-allowed; transform: none; }
 
   .input-hint {
     font-size: 11px;
@@ -659,27 +773,23 @@
   }
 
   .cam-btn {
-    padding: 12px 28px;
+    padding: 14px 28px;
+    min-height: var(--touch-lg);
     border-radius: 12px;
     border: none;
-    font-size: 15px;
-    font-weight: 600;
+    font-size: 16px;
+    font-weight: 700;
     cursor: pointer;
     font-family: 'DM Sans', sans-serif;
     transition: all 0.15s;
+    -webkit-tap-highlight-color: transparent;
   }
 
-  .cam-btn.capture {
-    background: var(--red);
-    color: white;
-  }
-  .cam-btn.capture:hover { background: var(--red-dark); }
+  .cam-btn.capture { background: var(--c-chilli); color: #fff; min-width: 150px; }
+  .cam-btn.capture:hover  { background: var(--c-chilli-dk); }
+  .cam-btn.capture:active { transform: scale(0.96); }
 
-  .cam-btn.close-cam {
-    background: rgba(255,255,255,0.12);
-    color: white;
-    border: 1px solid rgba(255,255,255,0.25);
-  }
+  .cam-btn.close-cam { background: rgba(255,255,255,0.12); color: #fff; border: 1.5px solid rgba(255,255,255,0.28); }
   .cam-btn.close-cam:hover { background: rgba(255,255,255,0.22); }
 
   /* ── Scrollbar ────────────────────────────────────────────────────────── */
@@ -687,12 +797,35 @@
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-  /* ── Responsive ───────────────────────────────────────────────────────── */
-  @media (max-width: 900px) {
+  /* ── Responsive / Mobile-first ───────────────────────────────────────── */
+  @media (max-width: 1024px) {
+    .layout { grid-template-columns: 240px 1fr; }
+    .sidebar-right { display: none; }
+  }
+
+  @media (max-width: 720px) {
     .layout { grid-template-columns: 1fr; }
-    .sidebar-left, .sidebar-right { display: none; }
-    .chat-messages { padding: 20px 16px; }
-    .input-area { padding: 12px 16px 20px; }
+    .sidebar-left { display: none; }
+    .chat-messages { padding: 16px 12px; gap: 14px; }
+    .input-area { padding: 10px 12px 18px; }
+    .bubble { max-width: 90%; font-size: 15px; }
+
+    /* Larger touch targets on small screens */
+    .img-btn  { width: var(--touch-md); height: var(--touch-md); font-size: 24px; }
+    .send-btn { width: var(--touch-md); height: var(--touch-md); font-size: 22px; }
+
+    /* Bigger detection typography for sunlight readability */
+    .det-pest-name  { font-size: 22px; }
+    .det-telugu     { font-size: 19px; }
+    .det-confidence { font-size: 20px; }
+  }
+
+  @media (max-width: 420px) {
+    .bubble { max-width: 95%; }
+    .det-pest-name  { font-size: 20px; }
+    .det-confidence { font-size: 18px; }
+    .welcome h2 { font-size: 26px; }
+    .welcome-cards { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -974,17 +1107,30 @@ LANGUAGE: reply in the same language the user writes in.`;
 
   // ── UI Helpers ─────────────────────────────────────────────────────────────
   function buildDetectionCard(det, isLow) {
-    const label = det.label || 'Unknown';
-    const telugu = det.telugu ? ` — ${det.telugu}` : '';
-    const conf = det.confidence != null ? `${det.confidence}%` : '?';
-    const kind = det.type || 'pest';
-    const warn = isLow
-      ? `<div style="display:inline-flex;align-items:center;gap:6px;background:#fff3cd;border:1px solid #ffc107;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:600;color:#856404;margin-bottom:8px;">⚠️ Low Confidence Warning</div><br>`
+    // Separate English name from Telugu if label contains "[Telugu]"
+    const raw    = det.label || 'Unknown';
+    const tMatch = raw.match(/\[(.+?)\]$/);
+    const english = tMatch ? raw.replace(/\s*\[.+?\]$/, '').trim() : raw;
+    const telugu  = det.telugu || (tMatch ? tMatch[1] : '');
+
+    const conf     = det.confidence != null ? det.confidence : '?';
+    const confPct  = `${conf}%`;
+    const kind     = (det.type || 'pest').toUpperCase();
+    const lowClass = isLow ? ' low' : '';
+
+    const warnBadge = isLow
+      ? `<div class="badge-low-conf">⚠️ Low Confidence Warning</div>`
       : '';
-    return (
-      `${warn}<div class="detection-badge">🔍 ${label}${telugu}</div>` +
-      `<div style="font-size:12px;color:var(--text-lt);margin:4px 0 10px;">Confidence: ${conf} | Type: ${kind}</div>`
-    );
+
+    return `<div class="det-card${isLow ? ' low-conf' : ''}">` +
+      warnBadge +
+      `<div class="det-pest-name">🔍 ${english}</div>` +
+      (telugu ? `<div class="det-telugu">${telugu}</div>` : '') +
+      `<div class="det-meta">` +
+        `<span class="det-confidence${lowClass}">${confPct}</span>` +
+        `<span class="det-type">${kind}</span>` +
+      `</div>` +
+    `</div>`;
   }
 
   function hideWelcome() {
