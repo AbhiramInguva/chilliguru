@@ -1433,12 +1433,30 @@ LANGUAGE: reply in the same language the user writes in.`;
         const rawText = await res.text();
         if (!res.ok) { throw new Error(JSON.parse(rawText).error || 'Detection error'); }
         const data = JSON.parse(rawText);
-        reply = data.reply;
-        const det   = data.detection;
-        const isLow = data.low_confidence;
-        detectionCard = det ? buildDetectionCard(det, isLow) : null;
-        conversation.push({ role: 'user',      content: userText });
-        conversation.push({ role: 'assistant', content: reply });
+
+        // ── Explicit failure / guardrail path ──────────────────────────────
+        // Backend sets success:false for non-chilli images (phase 3) and
+        // other intentional rejections — surface data.error in the bubble.
+        if (data.success === false) {
+          reply = data.error || 'Unable to process this image. Please try again.';
+          // Phase 3 = guardrail rejection (not a chilli plant image)
+          // Render the warning badge at the top of the bubble so the farmer
+          // gets a clear visual signal alongside the error text.
+          if (data.phase === 3) {
+            detectionCard = `<div class="warning-badge-inline">⚠️ Low Confidence Warning</div>`;
+          }
+          conversation.push({ role: 'user',      content: userText });
+          conversation.push({ role: 'assistant', content: reply });
+
+        // ── Successful detection path ──────────────────────────────────────
+        } else {
+          reply = data.reply;
+          const det   = data.detection;
+          const isLow = data.low_confidence;
+          detectionCard = det ? buildDetectionCard(det, isLow) : null;
+          conversation.push({ role: 'user',      content: userText });
+          conversation.push({ role: 'assistant', content: reply });
+        }
       } else {
         let messageToSend = userText;
         if (langMsg) messageToSend = `${langMsg} ${userText}`;
