@@ -513,6 +513,21 @@ header {
   30%            { transform: translateY(-7px); opacity: 1; }
 }
 
+/* Streaming cursor — shown on the live text node while Groq is generating */
+.streaming-cursor::after {
+  content: '▋';
+  animation: cursor-blink 0.85s step-end infinite;
+  opacity: 0.75;
+  font-size: 0.85em;
+  color: var(--e-400);
+  margin-left: 1px;
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 0.75; }
+  50%       { opacity: 0; }
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
    Pest Detection Card (Editorial)
 ───────────────────────────────────────────────────────────────────────────── */
@@ -1397,6 +1412,47 @@ LANGUAGE: reply in the same language the user writes in.`;
     if (t) t.remove();
   }
 
+  // Creates an empty bot bubble and returns the live text <div> so the
+  // SSE reader can append chunks to it word-by-word.
+  function addStreamingBubble(detectionCardHtml) {
+    hideWelcome();
+    const container = document.getElementById('chatMessages');
+
+    const wrap      = document.createElement('div');
+    wrap.className  = 'message bot';
+
+    const av        = document.createElement('div');
+    av.className    = 'avatar bot';
+    av.textContent  = '🌶️';
+
+    const bubble    = document.createElement('div');
+    bubble.className = 'bubble';
+
+    const lbl       = document.createElement('div');
+    lbl.className   = 'bubble-name';
+    lbl.textContent = 'ChilliGuru';
+    bubble.appendChild(lbl);
+
+    if (detectionCardHtml) {
+      const cardEl = document.createElement('div');
+      cardEl.innerHTML = detectionCardHtml;
+      bubble.appendChild(cardEl);
+    }
+
+    // This is the node we write chunks into — returned to the caller
+    const txt = document.createElement('div');
+    txt.style.whiteSpace = 'pre-wrap';
+    txt.className = 'streaming-cursor';
+    bubble.appendChild(txt);
+
+    wrap.appendChild(av);
+    wrap.appendChild(bubble);
+    container.appendChild(wrap);
+    container.scrollTop = container.scrollHeight;
+
+    return txt;
+  }
+
   // ── Send message ───────────────────────────────────────────────────────────
   async function sendMessage() {
     const input    = document.getElementById('userInput');
@@ -1421,50 +1477,125 @@ LANGUAGE: reply in the same language the user writes in.`;
     addTyping();
 
     try {
-      let reply;
-      let detectionCard = null;
-
       if (imageToSend) {
+        // ── Image path: SSE streaming /detect ─────────────────────────────────
         const form = new FormData();
         form.append('image',   imageToSend);
         form.append('message', userText);
         form.append('history', JSON.stringify(conversation));
-        const res     = await fetch(`${API_BASE}/detect`, { method: 'POST', body: form });
-        const rawText = await res.text();
-        if (!res.ok) { throw new Error(JSON.parse(rawText).error || 'Detection error'); }
-        const data = JSON.parse(rawText);
 
-        // ── Explicit failure / guardrail path ──────────────────────────────
-        // Backend sets success:false for non-chilli images (phase 3) and
-        // other intentional rejections — surface data.error in the bubble.
-        if (data.success === false) {
-          reply = data.error || 'Unable to process this image. Please try again.';
-          // Phase 3 = guardrail rejection (not a chilli plant image)
-          // Render the warning badge at the top of the bubble so the farmer
-          // gets a clear visual signal alongside the error text.
-          if (data.phase === 3) {
-            detectionCard = `<div class="warning-badge-inline">⚠️ Low Confidence Warning</div>`;
+        const res = await fetch(`${API_BASE}/detect`, { method: 'POST', body: form });
+
+        // Non-2xx responses are always small JSON (validation / rate-limit errors)
+        if (!res.ok) {
+          let errMsg = 'Detection error';
+          try { errMsg = (await res.json()).error || errMsg; } catch {}
+          throw new Error(errMsg);
+        }
+
+        const contentType = res.headers.get('content-type') || '';
+
+        if (contentType.includes('text/event-stream')) {
+          // ── SSE streaming path ─────────────────────────────────────────────
+          const reader  = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer    = '';   // partial SSE data accumulator
+          let fullText  = '';   // complete assembled response text
+          let textNode  = null; // live DOM node we write chunks into
+          let metaSeen  = false;
+
+          outer: while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // SSE events are separated by double newlines
+            const parts = buffer.split('\n\n');
+            buffer = parts.pop(); // keep any incomplete trailing fragment
+
+            for (const part of parts) {
+              const line = part.trim();
+              if (!line.startsWith('data: ')) continue;
+              let event;
+              try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+              if (event.type === 'meta') {
+                // First frame: detection card data → build bubble shell now
+                const cardHtml = event.detection
+                  ? buildDetectionCard(event.detection, event.low_confidence)
+                  : null;
+                removeTyping();
+                textNode = addStreamingBubble(cardHtml);
+                conversation.push({ role: 'user', content: userText });
+                metaSeen = true;
+
+              } else if (event.type === 'text' && textNode) {
+                fullText += event.text;
+                textNode.textContent = fullText;
+                const msgs = document.getElementById('chatMessages');
+                msgs.scrollTop = msgs.scrollHeight;
+
+              } else if (event.type === 'done') {
+                if (textNode) textNode.classList.remove('streaming-cursor');
+                conversation.push({ role: 'assistant', content: fullText });
+                break outer;
+
+              } else if (event.type === 'error') {
+                // Mid-stream Groq error: update existing bubble or show new one
+                const errMsg = event.error || 'Streaming failed. Please try again.';
+                if (textNode) {
+                  textNode.classList.remove('streaming-cursor');
+                  textNode.textContent = errMsg;
+                } else {
+                  removeTyping();
+                  addMessage('bot', errMsg);
+                }
+                break outer;
+              }
+            }
+          }
+
+          // Stream closed before we ever received a meta frame (network drop)
+          if (!metaSeen) {
+            removeTyping();
+            addMessage('bot', 'Connection interrupted. Please try again.');
+          }
+
+        } else {
+          // ── JSON path: guardrail rejections returned with HTTP 200 ──────────
+          // (success:false / phase:3 — backend emits plain JSON, not a stream)
+          const data = await res.json();
+          removeTyping();
+          let reply;
+          let detectionCard = null;
+
+          if (data.success === false) {
+            reply = data.error || 'Unable to process this image. Please try again.';
+            if (data.phase === 3) {
+              detectionCard = `<div class="warning-badge-inline">⚠️ Low Confidence Warning</div>`;
+            }
+          } else {
+            // Defensive fallback for any unexpected old-style JSON response
+            reply = data.reply || '';
+            detectionCard = data.detection
+              ? buildDetectionCard(data.detection, data.low_confidence)
+              : null;
           }
           conversation.push({ role: 'user',      content: userText });
           conversation.push({ role: 'assistant', content: reply });
-
-        // ── Successful detection path ──────────────────────────────────────
-        } else {
-          reply = data.reply;
-          const det   = data.detection;
-          const isLow = data.low_confidence;
-          detectionCard = det ? buildDetectionCard(det, isLow) : null;
-          conversation.push({ role: 'user',      content: userText });
-          conversation.push({ role: 'assistant', content: reply });
+          addMessage('bot', reply, null, detectionCard);
         }
+
       } else {
+        // ── Text-only path: /chat endpoint (unchanged) ─────────────────────────
         let messageToSend = userText;
         if (langMsg) messageToSend = `${langMsg} ${userText}`;
-        reply = await callGroq(messageToSend);
+        const reply = await callGroq(messageToSend);
+        removeTyping();
+        addMessage('bot', reply);
       }
 
-      removeTyping();
-      addMessage('bot', reply, null, detectionCard);
     } catch (err) {
       removeTyping();
       addMessage('bot', `Sorry, something went wrong: ${err.message}`);

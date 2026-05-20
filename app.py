@@ -5,7 +5,7 @@ import sys
 import tempfile
 import time
 import traceback
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -147,6 +147,52 @@ def call_hf_detector(image_bytes):
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
+def _groq_stream_generator(messages, detection, is_low):
+    """
+    SSE generator for the /detect streaming response.
+
+    Event frames (each separated by a blank line, prefixed with 'data: '):
+      {"type": "meta",  "detection": {...}|null, "low_confidence": bool}
+          — First frame. Carries the detection-card data so the frontend can
+            render the card before any text arrives.
+      {"type": "text",  "text": "<chunk>"}
+          — One frame per Groq delta token.
+      {"type": "done"}
+          — Clean end-of-stream signal.
+      {"type": "error", "error": "<message>"}
+          — Mid-stream Groq error; client renders it inside the active bubble.
+    """
+    # ── Frame 0: metadata ─────────────────────────────────────────────────────
+    meta = {"type": "meta", "detection": detection, "low_confidence": is_low}
+    yield f"data: {json.dumps(meta, ensure_ascii=False)}\n\n"
+
+    # ── Frames 1-N: Groq token stream ─────────────────────────────────────────
+    _t = time.time()
+    try:
+        response = get_client().chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            max_tokens=MAX_TOKENS,
+            temperature=0.7,
+            stream=True,
+        )
+        for chunk in response:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                payload = {"type": "text", "text": delta}
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        log.info("groq_stream_done", extra={"data": {
+            "duration_ms": round((time.time() - _t) * 1000),
+        }})
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    except Exception as exc:
+        log.error("groq_stream_error", extra={"data": {"error_message": str(exc)}},
+                  exc_info=True)
+        yield f"data: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
+
+
 SYSTEM_PROMPT = """IMPORTANT: Always respond in English unless the farmer writes in Telugu, Hindi, or Tamil first. Default language is English.
 
 You are ChilliGuru, a friendly farming assistant for chilli farmers in Andhra Pradesh and Telangana. Talk like a trusted friend — simple, warm, easy to understand.
@@ -225,7 +271,8 @@ def _detect_inner():
 
     # ── Try HF Space detector first ───────────────────────────────────────────
     image_file = request.files.get("image")
-    detection  = None
+    detection    = None
+    is_low       = False   # default; overwritten below if image is present
     groq_context = None
 
     if image_file:
@@ -356,13 +403,16 @@ def _detect_inner():
             f"then give a diagnosis and 2-3 organic solutions with metrics."
         )
 
-    # ── Ask Groq ──────────────────────────────────────────────────────────────
-    try:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": groq_context}]
-        response = get_client().chat.completions.create(model=MODEL, messages=messages, max_tokens=MAX_TOKENS, temperature=0.7)
-        return jsonify({"reply": response.choices[0].message.content.strip(), "detection": detection, "low_confidence": is_low})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    # ── Stream Groq response via SSE ──────────────────────────────────────────
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": groq_context}]
+    return Response(
+        stream_with_context(_groq_stream_generator(messages, detection, is_low)),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control":     "no-cache",
+            "X-Accel-Buffering": "no",   # disable nginx/Render proxy buffering
+        },
+    )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
