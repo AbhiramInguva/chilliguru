@@ -1,48 +1,54 @@
-import os
 import json
-import threading
+import os
+import tempfile
+import traceback
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+from gradio_client import Client, handle_file
 from groq import Groq
 
-MODEL      = "llama-3.3-70b-versatile"
+MODEL = "llama-3.3-70b-versatile"
 MAX_TOKENS = 1200
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
 
-def _wake_hf_space():
-    try:
-        from gradio_client import Client
-        print("Waking HF Space...", flush=True)
-        Client('inguvaaa/chilliguru-detector')
-        print("HF Space awake.", flush=True)
-    except Exception as e:
-        print(f"HF Space wakeup failed (non-fatal): {e}", flush=True)
+print("Connecting to HF Space...", flush=True)
+hf_client = None
+hf_connect_error = None
+try:
+    hf_client = Client("inguvaaa/chilliguru-detector", verbose=False)
+    print("HF Space connected.", flush=True)
+except Exception as exc:
+    hf_connect_error = str(exc)
+    print(f"HF Space connection failed at startup: {hf_connect_error}", flush=True)
 
-threading.Thread(target=_wake_hf_space, daemon=True).start()
 
 def get_client():
     return Groq(api_key=os.getenv("GROQ_API_KEY", ""))
 
-def call_hf_detector(image_bytes):
-    try:
-        import tempfile
-        from gradio_client import Client, handle_file
 
-        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as f:
-            f.write(image_bytes)
-            tmp_path = f.name
+def call_hf_detector(image_bytes):
+    if hf_client is None:
+        return {"error": f"HF client unavailable: {hf_connect_error or 'startup connection failed'}"}
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp.write(image_bytes)
+            tmp_path = tmp.name
 
         print("Calling HF Space...", flush=True)
-        client = Client('inguvaaa/chilliguru-detector', verbose=False)
-        result = client.predict(image=handle_file(tmp_path), api_name='/predict')
-        os.unlink(tmp_path)
+        result = hf_client.predict(image=handle_file(tmp_path), api_name="/predict")
         print(f"HF result: {result}", flush=True)
-        return result if isinstance(result, dict) else {'error': f'Unexpected result type: {type(result)}'}
-    except Exception as e:
-        print(f"HF detector exception: {e}", flush=True)
-        return {'error': str(e)}
+        return result if isinstance(result, dict) else {"result": str(result)}
+    except Exception as exc:
+        print(f"HF detector exception: {exc}", flush=True)
+        traceback.print_exc()
+        return {"error": str(exc)}
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 SYSTEM_PROMPT = """IMPORTANT: Always respond in English unless the farmer writes in Telugu, Hindi, or Tamil first. Default language is English.
 
@@ -72,14 +78,14 @@ def index():
 @app.route("/health")
 def health():
     return jsonify({
-        "status":      "ok",
-        "model_ready": False,
-        "groq_ready":  bool(os.getenv("GROQ_API_KEY", "")),
+        "status": "ok",
+        "hf_connected": hf_client is not None,
+        "groq_ready": bool(os.getenv("GROQ_API_KEY", "")),
     })
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    data    = request.get_json()
+    data = request.get_json(silent=True) or {}
     message = data.get("message", "").strip()
     history = data.get("history", [])
     if not message:
@@ -94,9 +100,10 @@ def chat():
 @app.route("/detect", methods=["POST"])
 def detect():
     try:
-     return _detect_inner()
+        return _detect_inner()
     except Exception as e:
         print(f"Unhandled /detect error: {e}", flush=True)
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 def _detect_inner():
@@ -117,6 +124,9 @@ def _detect_inner():
 
     if image_file:
         image_bytes = image_file.read()
+        if not image_bytes:
+            return jsonify({"error": "Empty file"}), 400
+
         result      = call_hf_detector(image_bytes)
         print(f"HF detector result: {result}", flush=True)
 
