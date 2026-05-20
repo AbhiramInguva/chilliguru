@@ -31,8 +31,18 @@ logging.root.setLevel(logging.INFO)
 logging.root.handlers = [_handler]
 log = logging.getLogger("chilliguru")
 
-MODEL = "llama-3.3-70b-versatile"
-MAX_TOKENS = 1200
+MODEL          = "llama-3.3-70b-versatile"
+MAX_TOKENS     = 1200
+MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB hard limit
+
+# Recognised image magic-byte signatures (read first 12 bytes)
+_IMAGE_SIGNATURES = [
+    b'\xff\xd8\xff',       # JPEG
+    b'\x89PNG\r\n\x1a\n', # PNG
+    b'GIF87a',             # GIF87a
+    b'GIF89a',             # GIF89a
+    b'RIFF',               # WebP  (bytes 0-3; bytes 8-11 must also be b'WEBP')
+]
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
@@ -201,6 +211,28 @@ def _detect_inner():
     groq_context = None
 
     if image_file:
+        # ── Size check (seek without loading the full stream) ─────────────────
+        image_file.seek(0, 2)
+        file_size = image_file.tell()
+        image_file.seek(0)
+        if file_size > MAX_IMAGE_BYTES:
+            log.warning("payload_too_large", extra={"data": {"size_bytes": file_size}})
+            return jsonify({"error": "Image exceeds the 5 MB size limit"}), 413
+
+        # ── Magic-byte type verification (first 12 bytes only) ────────────────
+        header = image_file.read(12)
+        image_file.seek(0)
+        is_webp = header[:4] == b'RIFF' and header[8:12] == b'WEBP'
+        is_known = is_webp or any(header.startswith(sig) for sig in _IMAGE_SIGNATURES if sig != b'RIFF')
+        if not is_known:
+            log.warning("invalid_image_magic", extra={"data": {"header_hex": header.hex()}})
+            return jsonify({
+                "success": False,
+                "error":   "Invalid or corrupted image format submitted",
+                "phase":   0,
+            }), 400
+
+        # ── Full read (validation passed) ─────────────────────────────────────
         image_bytes = image_file.read()
         if not image_bytes:
             return jsonify({"error": "Empty file"}), 400
