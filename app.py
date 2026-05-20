@@ -7,6 +7,8 @@ import time
 import traceback
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from gradio_client import Client, handle_file
 from groq import Groq
 import detector
@@ -46,6 +48,21 @@ _IMAGE_SIGNATURES = [
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
+
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    storage_uri="memory://",
+    default_limits=[],
+)
+
+@app.errorhandler(429)
+def rate_limit_exceeded(e):
+    log.warning("rate_limit_exceeded", extra={"data": {"remote_addr": request.remote_addr}})
+    return jsonify({
+        "success": False,
+        "error":   "Too many uploads. Please wait a minute before trying again.",
+    }), 429
 
 log.info("hf_connect_start")
 hf_client = None
@@ -178,6 +195,7 @@ def chat():
         return jsonify({"error": str(e)}), 500
 
 @app.route("/detect", methods=["POST"])
+@limiter.limit("5 per minute")
 def detect():
     _t0 = time.time()
     try:
