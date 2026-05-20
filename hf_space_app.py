@@ -43,6 +43,18 @@ CLASS_MAP_18_TO_15: dict[int, int] = {
 }
 
 model = YOLO(str(MODEL_PATH))
+
+_yolo_model = None
+def _load_yolo():
+    global _yolo_model
+    if _yolo_model is None:
+        p3 = Path(__file__).resolve().parent / "yolov8n.pt"
+        if p3.exists():
+            _yolo_model = YOLO(str(p3))
+        else:
+            _yolo_model = YOLO("yolov8n.pt")
+    return _yolo_model
+
 with open(INFO_PATH, encoding="utf-8") as f:
     MODEL_INFO = json.load(f)
 
@@ -91,6 +103,46 @@ def resolve_detection_class(cls_id: int) -> tuple[int, str, str]:
 def predict(image: Image.Image | None):
     if image is None:
         return {"success": False, "error": "No image provided"}
+
+    # ── Preprocessing / Validation: Out-of-Domain Guardrail ──────────────────
+    try:
+        yolo = _load_yolo()
+        if yolo:
+            results = yolo.predict(image, verbose=False, conf=0.10)
+            boxes = results[0].boxes
+            names_map = results[0].names
+
+            AGRICULTURAL_CLASSES = {58, 50, 51, 46, 47, 49}
+            AGRICULTURAL_NAMES = {"potted plant", "broccoli", "carrot", "banana", "apple", "orange"}
+
+            # If the model returns 0 detections (solid canvas, blank wall/background)
+            if boxes is None or len(boxes) == 0:
+                return {
+                    "success": False,
+                    "error": "Please upload chili plant images",
+                    "phase": 3,
+                    "low_confidence": True
+                }
+
+            # Check if the detected object classes are purely non-agricultural
+            purely_non_agricultural = True
+            for box in boxes:
+                cls_id = int(box.cls[0])
+                class_name = str(names_map.get(cls_id, cls_id)).lower()
+                is_ag = (cls_id in AGRICULTURAL_CLASSES) or (class_name in AGRICULTURAL_NAMES)
+                if is_ag:
+                    purely_non_agricultural = False
+                    break
+
+            if purely_non_agricultural:
+                return {
+                    "success": False,
+                    "error": "Please upload chili plant images",
+                    "phase": 3,
+                    "low_confidence": True
+                }
+    except Exception as e:
+        print(f"   [OOD Preprocessing] YOLOv8n check error: {e}", flush=True)
 
     results = model.predict(image, conf=CONF_PRED, verbose=False, imgsz=IMGSZ)
     r0 = results[0]
@@ -164,4 +216,6 @@ demo = gr.Interface(
 )
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(show_error=True)
+
+# Sync: 2026-05-20T23:42:29

@@ -235,6 +235,46 @@ def detect(image_path):
     if not img.exists():
         return {"success": False, "error": f"Image not found: {image_path}"}
 
+    # ── Preprocessing / Validation: Out-of-Domain Guardrail ──────────────────
+    try:
+        phase3_model = _load_yolov8n_model()
+        if phase3_model:
+            results = phase3_model.predict(str(img), verbose=False, conf=0.10)
+            boxes = results[0].boxes
+            names_map = results[0].names
+
+            AGRICULTURAL_CLASSES = {58, 50, 51, 46, 47, 49}
+            AGRICULTURAL_NAMES = {"potted plant", "broccoli", "carrot", "banana", "apple", "orange"}
+
+            # If the model returns 0 detections (solid canvas, blank wall/background)
+            if boxes is None or len(boxes) == 0:
+                return {
+                    "success": False,
+                    "error": "Please upload chili plant images",
+                    "phase": 3,
+                    "low_confidence": True
+                }
+
+            # Check if the detected object classes are purely non-agricultural
+            purely_non_agricultural = True
+            for box in boxes:
+                cls_id = int(box.cls[0])
+                class_name = str(names_map.get(cls_id, cls_id)).lower()
+                is_ag = (cls_id in AGRICULTURAL_CLASSES) or (class_name in AGRICULTURAL_NAMES)
+                if is_ag:
+                    purely_non_agricultural = False
+                    break
+
+            if purely_non_agricultural:
+                return {
+                    "success": False,
+                    "error": "Please upload chili plant images",
+                    "phase": 3,
+                    "low_confidence": True
+                }
+    except Exception as e:
+        print(f"   [OOD Preprocessing] YOLOv8n check error: {e}", flush=True)
+
     # ──────────────────────────────────────────────────────────────────────────
     # PHASE 1: Primary Chilli Detector
     # ──────────────────────────────────────────────────────────────────────────
@@ -270,6 +310,16 @@ def detect(image_path):
                 top = detections[0]
                 
                 if top["confidence"] >= (PHASE1_MIN_CONF * 100):
+                    # Verify against actual localized agricultural profiles
+                    if top["raw_label"] not in CLASS_NAMES:
+                        return {
+                            "success": False,
+                            "error": "Please upload chili plant images",
+                            "message": "Please upload chili plant images",
+                            "phase": 3,
+                            "low_confidence": True
+                        }
+
                     phase1_result = {
                         "success": True,
                         "top_detection": top,
@@ -328,6 +378,16 @@ def detect(image_path):
                 top = detections[0]
                 
                 if top["confidence"] >= 30:
+                    # Verify against actual localized agricultural profiles
+                    if top["raw_label"] not in IP102_CLASS_MAPPING:
+                        return {
+                            "success": False,
+                            "error": "Please upload chili plant images",
+                            "message": "Please upload chili plant images",
+                            "phase": 3,
+                            "low_confidence": True
+                        }
+
                     phase2_result = {
                         "success": True,
                         "top_detection": top,
@@ -351,40 +411,45 @@ def detect(image_path):
         if phase3_model:
             results = phase3_model.predict(str(img), verbose=False, conf=0.10)
             boxes = results[0].boxes
-            
+            names_map = results[0].names
+
+            # Standard COCO classes related to plants/agriculture
+            AGRICULTURAL_CLASSES = {58, 50, 51, 46, 47, 49}
+            AGRICULTURAL_NAMES = {"potted plant", "broccoli", "carrot", "banana", "apple", "orange"}
+
+            non_agricultural_objects = []
             if boxes is not None and len(boxes) > 0:
-                has_detection = int(len(boxes)) > 0
+                for box in boxes:
+                    cls_id = int(box.cls[0])
+                    class_name = str(names_map.get(cls_id, cls_id)).lower()
+                    is_ag = (cls_id in AGRICULTURAL_CLASSES) or (class_name in AGRICULTURAL_NAMES)
+                    if not is_ag:
+                        non_agricultural_objects.append(class_name)
+
+            if len(non_agricultural_objects) > 0:
+                # Phase 3 detected a non-agricultural object -> Reject immediately
                 phase3_result = {
-                    "success": True,
-                    "top_detection": None,
-                    "all_detections": [],
-                    "model_used": "Phase 3: YOLOv8n Generic Detector (Anomaly Check)",
+                    "success": False,
+                    "error": "Please upload chili plant images",
+                    "message": "Please upload chili plant images",
                     "low_confidence": True,
                     "phase": 3,
-                    "message": "No specific pest detected (YOLOv8n generic check)" if not has_detection else "Generic object detected",
-                }
-            else:
-                phase3_result = {
-                    "success": True,
-                    "top_detection": None,
-                    "all_detections": [],
-                    "model_used": "Phase 3: YOLOv8n Generic Detector (No anomaly)",
-                    "low_confidence": True,
-                    "phase": 3,
-                    "message": "No anomalies detected",
+                    "detected_objects": non_agricultural_objects,
+                    "model_used": "Phase 3: YOLOv8n Generic Detector (Anomaly Check)"
                 }
     except Exception as e:
         print(f"   [Phase 3] Error: {e}", flush=True)
 
-    if phase3_result and phase3_result["success"]:
+    if phase3_result is not None:
         return phase3_result
 
     # ──────────────────────────────────────────────────────────────────────────
-    # All phases failed or unavailable
+    # All phases failed or unavailable, or completely fell through all three phases
     # ──────────────────────────────────────────────────────────────────────────
     return {
         "success": False,
-        "error": "No models available for detection",
+        "error": "Please upload chili plant images",
+        "message": "Please upload chili plant images",
         "low_confidence": True,
         "phase": 0,
     }
@@ -437,3 +502,6 @@ def format_for_openai(result, user_description=""):
         "=" * 50,
     ]
     return "\n".join(lines)
+
+# Sync: 2026-05-20T23:42:29
+
