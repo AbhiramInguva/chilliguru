@@ -1,0 +1,5 @@
+ultralytics>=8.0.0
+gradio>=4.0.0
+Pillow
+torch
+torchvision
