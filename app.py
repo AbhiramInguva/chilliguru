@@ -134,13 +134,16 @@ def _detect_inner():
         try:
             if hf_client is not None:
                 result = call_hf_detector(image_bytes)
+                # Intentional guardrail rejection — return immediately, don't fall back
+                if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
+                    return jsonify(result)
                 if result and "error" in result:
-                    print(f"HF space returned error: {result['error']}. Falling back to local...", flush=True)
+                    print(f"HF space error: {result['error']}. Falling back to local...", flush=True)
                     result = None
             else:
-                print("HF client is None (not connected). Falling back to local...", flush=True)
+                print("HF client not connected. Falling back to local...", flush=True)
         except Exception as exc:
-            print(f"HF Space client call failed: {exc}. Falling back to local...", flush=True)
+            print(f"HF Space unreachable: {exc}. Falling back to local...", flush=True)
             result = None
 
         if result is None:
@@ -160,13 +163,6 @@ def _detect_inner():
                     os.unlink(tmp_path)
 
         print(f"Final detector result: {result}", flush=True)
-
-        if isinstance(result, dict) and not result.get("success") and result.get("error") == "Please upload chili plant images":
-            # Out-of-domain rejection payload — bypass Groq and return directly
-            return jsonify({
-                "reply": "Please upload chili plant images",
-                "detection": None
-            })
 
         top    = result.get("top_detection") if isinstance(result, dict) else None
         is_low = result.get("low_confidence", False) if isinstance(result, dict) else True
