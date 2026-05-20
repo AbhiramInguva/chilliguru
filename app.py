@@ -19,7 +19,7 @@ hf_client = None
 hf_connect_error = None
 try:
     hf_token = os.environ.get("HF_TOKEN")
-    hf_client = Client("inguvaaa/comprehensive", hf_token=hf_token, verbose=False)
+    hf_client = Client("inguvaaa/comprehensive", token=hf_token, verbose=False)
     print("HF Space connected.", flush=True)
 except Exception as exc:
     hf_connect_error = str(exc)
