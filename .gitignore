@@ -1,8 +1,20 @@
-.env
+# Model weights (use upload_to_hf.py instead)
+*.pt
+*.onnx
+*.engine
+
+# Kaggle/training artifacts
+runs/
+wandb/
+datasets/
+
+# Python
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-.Python
-*.pt
-__pycache__/
+.env
+venv/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
