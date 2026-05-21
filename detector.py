@@ -18,6 +18,13 @@ warnings.filterwarnings("ignore")
 
 log = logging.getLogger("chilliguru.detector")
 
+# Configure single-threaded ONNX session options for the AI firewall
+opts = ort.SessionOptions()
+opts.intra_op_num_threads = 1
+opts.inter_op_num_threads = 1
+ai_session = ort.InferenceSession("weights/ai_filter.onnx", opts)
+
+
 class ListOrValue:
     def __init__(self, val):
         self.val = val
@@ -1158,5 +1165,39 @@ def format_for_openai(result, user_description=""):
         "=" * 50,
     ]
     return "\n".join(lines)
+
+def check_synthetic(source):
+    """
+    Run the incoming image through the AI filter session.
+    """
+    import numpy as np
+    import cv2
+    from pathlib import Path
+    
+    if isinstance(source, (str, Path)):
+        img0 = cv2.imread(str(source))
+        if img0 is None:
+            raise ValueError(f"Could not read image: {source}")
+    elif isinstance(source, np.ndarray):
+        img0 = source.copy()
+    elif isinstance(source, bytes):
+        nparr = np.frombuffer(source, np.uint8)
+        img0 = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img0 is None:
+            raise ValueError("Could not decode image bytes")
+    else:
+        raise ValueError(f"Unsupported source type: {type(source)}")
+        
+    img = cv2.resize(img0, (640, 640))
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = img.astype(np.float32) / 255.0
+    img = np.transpose(img, (2, 0, 1))
+    img = np.expand_dims(img, axis=0)
+    
+    input_name = ai_session.get_inputs()[0].name
+    output_name = ai_session.get_outputs()[0].name
+    outputs = ai_session.run([output_name], {input_name: img})
+    return float(outputs[0][0])
+
 
 # Sync: 2026-05-21T00:00:00

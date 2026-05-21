@@ -501,6 +501,21 @@ def _detect_inner():
         if not image_bytes:
             return jsonify({"error": "Empty file"}), 400
 
+        # AI Synthetic Payload Firewall Check (Model 0)
+        try:
+            synthetic_score = detector.check_synthetic(image_bytes)
+            if synthetic_score > 0.90:
+                log.warning("ai_synthetic_payload_blocked")
+                request_id = g.get("request_id", "")
+                response_obj = make_response(jsonify({
+                    "error": "AI synthetic payload blocked",
+                    "request_id": request_id
+                }))
+                response_obj.status_code = 400
+                return response_obj
+        except Exception as filter_exc:
+            log.warning("ai_filter_failed", extra={"data": {"error_message": str(filter_exc)}})
+
         result = None
         force_bypass_ood = False
         # Try HF space call first (skip if circuit is open)
@@ -593,9 +608,19 @@ def _detect_inner():
                         result = None
                     
                     if result is not None:
-                        # Process as normal if not overridden
+                        # Explicit out-of-domain crop rejection check (The Elephant Fix)
+                        if label == "non_chilli":
+                            log.warning("out_of_domain_crop")
+                            request_id = g.get("request_id", "")
+                            response_obj = make_response(jsonify({
+                                "error": "Cannot identify crop. Please upload a clear photo of a chilli plant.",
+                                "request_id": request_id
+                            }))
+                            response_obj.status_code = 422
+                            return response_obj
+
                         is_guardrail_rejection = False
-                        if "non_chilli" in label or label == "0":
+                        if label == "0":
                             is_guardrail_rejection = True
                         if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
                             is_guardrail_rejection = True
