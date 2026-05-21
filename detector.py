@@ -20,6 +20,11 @@ PHASE3_MODEL_PATH    = "yolov8n.pt"
 CONFIDENCE_THRESHOLD = 45.0
 PHASE1_MIN_CONF      = 0.40  # 40% — Phase 1 requirement
 
+CLASS_SPECIFIC_THRESHOLDS = {
+    "Fruit Borer": 75.0,
+    "Pest-Helicoverpa armigera (Fruit Borer)": 75.0,
+}
+
 if not Path(PHASE1_MODEL_PATH).exists():
     log.warning("phase1_model_missing", extra={"data": {"path": PHASE1_MODEL_PATH}})
 
@@ -249,7 +254,7 @@ def _detect_source(source):
     try:
         phase3_model = _load_yolov8n_model()
         if phase3_model:
-            results   = phase3_model.predict(source, verbose=False, conf=0.10)
+            results   = phase3_model.predict(source, verbose=False, conf=0.10, iou=0.45)
             boxes     = results[0].boxes
             names_map = results[0].names
 
@@ -284,7 +289,7 @@ def _detect_source(source):
     try:
         phase1_model = _load_custom()
         if phase1_model:
-            results   = phase1_model.predict(source, verbose=False, conf=0.10)
+            results   = phase1_model.predict(source, verbose=False, conf=0.10, iou=0.45)
             boxes     = results[0].boxes
             names_map = results[0].names
 
@@ -320,12 +325,21 @@ def _detect_source(source):
                             "phase":   3,
                             "low_confidence": True,
                         }
+                    custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(top["raw_label"])
+                    if custom_thresh is None:
+                        friendly_eng, _, _ = _get_friendly_name(top["raw_label"])
+                        custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(friendly_eng)
+                    
+                    is_low = top["confidence"] < CONFIDENCE_THRESHOLD
+                    if custom_thresh is not None and top["confidence"] < custom_thresh:
+                         is_low = True
+
                     phase1_result = {
                         "success":        True,
                         "top_detection":  top,
                         "all_detections": detections[:3],
                         "model_used":     "Phase 1: VIT-AP ChilliGuru (18-class)",
-                        "low_confidence": top["confidence"] < CONFIDENCE_THRESHOLD,
+                        "low_confidence": is_low,
                         "phase":          1,
                     }
     except Exception as e:
@@ -339,7 +353,7 @@ def _detect_source(source):
     try:
         phase2_model = _load_ip102_model()
         if phase2_model:
-            results   = phase2_model.predict(source, verbose=False, conf=0.10)
+            results   = phase2_model.predict(source, verbose=False, conf=0.10, iou=0.45)
             boxes     = results[0].boxes
             names_map = results[0].names
 
@@ -386,12 +400,25 @@ def _detect_source(source):
                             "phase":   3,
                             "low_confidence": True,
                         }
+                    mapped_raw = top["raw_label"]
+                    if top["raw_label"] in IP102_CLASS_MAPPING:
+                        mapped_raw = IP102_CLASS_MAPPING[top["raw_label"]][0]
+                    
+                    friendly_eng, _, _ = _get_friendly_name(mapped_raw)
+                    custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(mapped_raw)
+                    if custom_thresh is None:
+                        custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(friendly_eng)
+
+                    is_low = top["confidence"] < CONFIDENCE_THRESHOLD
+                    if custom_thresh is not None and top["confidence"] < custom_thresh:
+                        is_low = True
+
                     phase2_result = {
                         "success":        True,
                         "top_detection":  top,
                         "all_detections": detections[:3],
                         "model_used":     "Phase 2: IP102 Generic Pest Detector (5-class)",
-                        "low_confidence": top["confidence"] < CONFIDENCE_THRESHOLD,
+                        "low_confidence": is_low,
                         "phase":          2,
                     }
     except Exception as e:
@@ -405,7 +432,7 @@ def _detect_source(source):
     try:
         phase3_model = _load_yolov8n_model()
         if phase3_model:
-            results   = phase3_model.predict(source, verbose=False, conf=0.10)
+            results   = phase3_model.predict(source, verbose=False, conf=0.10, iou=0.45)
             boxes     = results[0].boxes
             names_map = results[0].names
 

@@ -63,6 +63,11 @@ TELUGU: dict[str, str] = MODEL_INFO.get("telugu_names", {})
 CLASS_TYPES: dict[str, str] = MODEL_INFO.get("class_types", {})
 HIGH_CONF = float(MODEL_INFO.get("high_confidence_min", 55))
 MARGIN_THR = float(MODEL_INFO.get("margin_threshold", 0.15))
+
+CLASS_SPECIFIC_THRESHOLDS = {
+    "Fruit Borer": 75.0,
+    "Pest-Helicoverpa armigera (Fruit Borer)": 75.0,
+}
 CONF_PRED = float(MODEL_INFO.get("confidence_threshold", 0.25))
 IMGSZ = int(MODEL_INFO.get("imgsz", 640))
 
@@ -108,7 +113,7 @@ def predict(image: Image.Image | None):
     try:
         yolo = _load_yolo()
         if yolo:
-            results = yolo.predict(image, verbose=False, conf=0.10)
+            results = yolo.predict(image, verbose=False, conf=0.10, iou=0.45)
             boxes = results[0].boxes
             names_map = results[0].names
 
@@ -144,7 +149,7 @@ def predict(image: Image.Image | None):
     except Exception as e:
         print(f"   [OOD Preprocessing] YOLOv8n check error: {e}", flush=True)
 
-    results = model.predict(image, conf=CONF_PRED, verbose=False, imgsz=IMGSZ)
+    results = model.predict(image, conf=CONF_PRED, verbose=False, imgsz=IMGSZ, iou=0.45)
     r0 = results[0]
     boxes = r0.boxes
 
@@ -169,6 +174,11 @@ def predict(image: Image.Image | None):
         margin = 1.0
 
     is_low = confidence_pct < HIGH_CONF or (confidence_pct < 70.0 and margin < MARGIN_THR)
+    custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(label)
+    if custom_thresh is None:
+        custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(raw_label)
+    if custom_thresh is not None and confidence_pct < custom_thresh:
+        is_low = True
 
     all_detections = []
     for i in range(len(boxes)):
