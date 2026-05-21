@@ -217,16 +217,16 @@ def train(yaml_path, classes):
                     transforms = [
                         A.Blur(p=0.01),
                         A.MedianBlur(p=0.01),
-                        A.ToGray(p=0.01),
+                        A.ToGray(p=0.2),
                         A.CLAHE(p=0.01),
                         A.RandomBrightnessContrast(p=0.0),
                         A.RandomGamma(p=0.0),
                         A.ImageCompression(quality_range=(75, 100), p=0.0),
-                        A.HueSaturationValue(hue_shift_limit=180, p=0.8)
+                        A.HueSaturationValue(hue_shift_limit=180, sat_shift_limit=40, val_shift_limit=30, p=0.8)
                     ]
                 original_init(self, p=p, transforms=transforms)
             Albumentations.__init__ = patched_init
-            print("   [INFO] Injected HueSaturationValue(hue_shift_limit=180, p=0.8) into Albumentations configuration block.")
+            print("   [INFO] Injected HueSaturationValue(hue_shift_limit=180, sat_shift_limit=40, val_shift_limit=30, p=0.8) and ToGray(p=0.2) into Albumentations configuration block.")
         except Exception as patch_err:
             print(f"   [WARNING] Failed to patch Albumentations: {patch_err}")
 

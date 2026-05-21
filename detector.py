@@ -28,7 +28,9 @@ TRANSLATION_DICTIONARY = {
     4: "Mealybugs [పిండి పురుగు]",
     "4": "Mealybugs [పిండి పురుగు]",
     "Mealybugs": "Mealybugs [పిండి పురుగు]",
-    "Mealybug": "Mealybugs [పిండి పురుగు]"
+    "Mealybug": "Mealybugs [పిండి పురుగు]",
+    "Pest-Phenacoccus solenopsis (Mealybug)": "Mealybugs [పిండి పురుగు]",
+    "Pest-Phenacoccus solenopsis-Pendi Nalli": "Mealybugs [పిండి పురుగు]"
 }
 
 
@@ -329,7 +331,7 @@ def _get_friendly_name(raw_label):
         "Pest-Asphondylia capsici":              ("Chilli Flower Gall Midge",           "మిరప పూల పురుగు",                    "pest"),
         "Pest-Helicoverpa armigera (Fruit Borer)":("Fruit Borer",                      "పండు తొలిచే పురుగు",                 "pest"),
         "Pest-Myzus persicae (Aphids)":          ("Aphids (Green Louse)",               "పేను పురుగు",                        "pest"),
-        "Pest-Phenacoccus solenopsis (Mealybug)":("Mealybug",                          "తెల్ల దూది పురుగు",                   "pest"),
+        "Pest-Phenacoccus solenopsis (Mealybug)":("Mealybugs",                         "పిండి పురుగు",                        "pest"),
         "Pest-Red Mites":                        ("Red Spider Mites",                   "ఎర్ర సాలె పురుగు",                   "pest"),
         "Pest-Spodoptera exigua (Beet Armyworm)":("Beet Armyworm",                     "చిన్న గొంగళి పురుగు",                "pest"),
         "Pest-Spodoptera litura (Armyworm)":     ("Armyworm",                           "గొంగళి పురుగు",                     "pest"),
@@ -391,6 +393,18 @@ PEST_INFO = {
         "damage":   "Sucks sap and spreads mosaic and leaf curl viruses — worse in cool weather",
     },
     "Pest-Phenacoccus solenopsis (Mealybug)": {
+        "symptoms": "White cottony clusters on stems, leaves and fruit joints, sticky sooty mold",
+        "damage":   "Severe infestation causes wilting, stunting and complete plant collapse",
+    },
+    "Mealybugs": {
+        "symptoms": "White cottony clusters on stems, leaves and fruit joints, sticky sooty mold",
+        "damage":   "Severe infestation causes wilting, stunting and complete plant collapse",
+    },
+    "Mealybug": {
+        "symptoms": "White cottony clusters on stems, leaves and fruit joints, sticky sooty mold",
+        "damage":   "Severe infestation causes wilting, stunting and complete plant collapse",
+    },
+    "4": {
         "symptoms": "White cottony clusters on stems, leaves and fruit joints, sticky sooty mold",
         "damage":   "Severe infestation causes wilting, stunting and complete plant collapse",
     },
@@ -471,7 +485,7 @@ def _load_yolov8n_model():
 
 def _resolve_label(raw_label, cls_id):
     """Return the canonical CLASS_NAMES entry for a detected label."""
-    if cls_id == 4 or str(cls_id) == "4" or raw_label in ("Mealybugs", "Mealybug"):
+    if cls_id in (4, 11) or str(cls_id) in ("4", "11") or raw_label in TRANSLATION_DICTIONARY or "mealybug" in str(raw_label).lower():
         return "Mealybugs"
     if raw_label in PEST_INFO:
         return raw_label

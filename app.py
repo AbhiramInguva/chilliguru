@@ -23,7 +23,9 @@ TRANSLATION_DICTIONARY = {
     4: "Mealybugs [పిండి పురుగు]",
     "4": "Mealybugs [పిండి పురుగు]",
     "Mealybugs": "Mealybugs [పిండి పురుగు]",
-    "Mealybug": "Mealybugs [పిండి పురుగు]"
+    "Mealybug": "Mealybugs [పిండి పురుగు]",
+    "Pest-Phenacoccus solenopsis (Mealybug)": "Mealybugs [పిండి పురుగు]",
+    "Pest-Phenacoccus solenopsis-Pendi Nalli": "Mealybugs [పిండి పురుగు]"
 }
 
 # ── Structured JSON logger ────────────────────────────────────────────────────
@@ -700,7 +702,7 @@ def _detect_inner():
                     lbl = det.get("label", "")
                     raw_lbl = det.get("raw_label", "")
                     cls_val = det.get("class_id")
-                    if lbl in (4, "4", "Mealybugs", "Mealybug") or raw_lbl in (4, "4", "Mealybugs", "Mealybug") or cls_val in (4, "4"):
+                    if lbl in TRANSLATION_DICTIONARY or raw_lbl in TRANSLATION_DICTIONARY or cls_val in TRANSLATION_DICTIONARY or "mealybug" in str(lbl).lower() or "mealybug" in str(raw_lbl).lower():
                         det["label"] = "Mealybugs [పిండి పురుగు]"
                         det["telugu"] = "పిండి పురుగు"
                         det["raw_label"] = "Mealybugs"
