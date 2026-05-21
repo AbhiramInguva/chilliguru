@@ -4,6 +4,7 @@
 !ip102_model.pt
 !yolov8n.pt
 *.onnx
+!weights/*.onnx
 *.engine
 
 # Kaggle/training artifacts

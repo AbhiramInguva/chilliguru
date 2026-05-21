@@ -12,13 +12,162 @@ Each phase runs in isolated try/except for fault tolerance.
 import logging
 from pathlib import Path
 import warnings
+import onnxruntime as ort
+import numpy as np
+import cv2
+
 warnings.filterwarnings("ignore")
 
 log = logging.getLogger("chilliguru.detector")
 
-PHASE1_MODEL_PATH    = "chilli_pest_model.pt"
-PHASE2_MODEL_PATH    = "ip102_model.pt"
-PHASE3_MODEL_PATH    = "yolov8n.pt"
+class ListOrValue:
+    def __init__(self, val):
+        self.val = val
+    def __getitem__(self, idx):
+        return self.val
+    def __int__(self):
+        return int(self.val)
+    def __float__(self):
+        return float(self.val)
+    def __len__(self):
+        return 1
+    def __str__(self):
+        return str(self.val)
+    def __repr__(self):
+        return repr(self.val)
+
+class MockBox:
+    def __init__(self, cls_id, conf, xyxy):
+        self.cls = ListOrValue(cls_id)
+        self.conf = ListOrValue(conf)
+        self.xyxy = [xyxy]
+
+class MockResult:
+    def __init__(self, boxes, names):
+        self.boxes = boxes
+        self.names = names
+
+class ONNXYOLO:
+    def __init__(self, model_path):
+        self.model_path = model_path
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = 1
+        opts.inter_op_num_threads = 1
+        self.session = ort.InferenceSession(model_path, opts)
+        self.input_name = self.session.get_inputs()[0].name
+        self.output_name = self.session.get_outputs()[0].name
+        
+        if "chilli_pest_model" in model_path:
+            self.names = {
+                0: 'Black Thrips-Leafs', 1: 'Black Thrips-Pest', 2: 'Collectotrichum spp-Kaya kullu-',
+                3: 'Curling-Leafs', 4: 'Healthy-Leafs', 5: 'Leaf Spot-Leafs',
+                6: 'Leveillula taurica-Budiha tegulu-Leaf-', 7: 'Mozaik-Leaf', 8: 'Pest-Asphondylia capsici-',
+                9: 'Pest-Helicoverpa armigera-Kaya toluchu purugu', 10: 'Pest-Myzus persicae-',
+                11: 'Pest-Phenacoccus solenopsis-Pendi Nalli', 12: 'Pest-Red Mites',
+                13: 'Pest-Spodoptera exigua-', 14: 'Pest-Spodoptera litura-', 15: 'Pest-White Fly',
+                16: 'Red Mites leafs', 17: 'White Fly-Leafs'
+            }
+        elif "ip102_model" in model_path:
+            self.names = {0: 'aphid', 1: 'thrips', 2: 'tobaccocaterpillar', 3: 'whitefly', 4: 'mites'}
+        else:
+            self.names = {i: f"class_{i}" for i in range(80)}
+            self.names[58] = "potted plant"
+            self.names[50] = "broccoli"
+            self.names[51] = "carrot"
+            self.names[46] = "banana"
+            self.names[47] = "apple"
+            self.names[49] = "orange"
+            
+    def predict(self, source, verbose=False, conf=0.10, iou=0.45):
+        if isinstance(source, (str, Path)):
+            img0 = cv2.imread(str(source))
+            if img0 is None:
+                raise ValueError(f"Could not read image: {source}")
+        elif isinstance(source, np.ndarray):
+            img0 = source.copy()
+        else:
+            raise ValueError(f"Unsupported source type: {type(source)}")
+            
+        h0, w0 = img0.shape[:2]
+        img = cv2.resize(img0, (640, 640))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = img.astype(np.float32) / 255.0
+        img = np.transpose(img, (2, 0, 1))
+        img = np.expand_dims(img, axis=0)
+        
+        outputs = self.session.run([self.output_name], {self.input_name: img})
+        output = outputs[0]
+        output = output[0]
+        output = np.transpose(output, (1, 0))
+        
+        boxes = output[:, :4]
+        scores = output[:, 4:]
+        
+        class_ids = np.argmax(scores, axis=1)
+        confidences = np.max(scores, axis=1)
+        
+        mask = confidences >= conf
+        boxes = boxes[mask]
+        confidences = confidences[mask]
+        class_ids = class_ids[mask]
+        
+        if len(boxes) > 0:
+            xc, yc, w, h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+            x1 = xc - w / 2
+            y1 = yc - h / 2
+            x2 = xc + w / 2
+            y2 = yc + h / 2
+            boxes = np.stack([x1, y1, x2, y2], axis=1)
+            
+            scale_x = w0 / 640.0
+            scale_y = h0 / 640.0
+            boxes[:, 0] *= scale_x
+            boxes[:, 2] *= scale_x
+            boxes[:, 1] *= scale_y
+            boxes[:, 3] *= scale_y
+        else:
+            boxes = np.empty((0, 4))
+            
+        keep = self._nms(boxes, confidences, iou)
+        
+        mock_boxes = []
+        for idx in keep:
+            mock_boxes.append(MockBox(
+                cls_id=int(class_ids[idx]),
+                conf=float(confidences[idx]),
+                xyxy=boxes[idx].tolist()
+            ))
+            
+        return [MockResult(boxes=mock_boxes, names=self.names)]
+        
+    def _nms(self, boxes, scores, iou_threshold):
+        if len(boxes) == 0:
+            return []
+        x1 = boxes[:, 0]
+        y1 = boxes[:, 1]
+        x2 = boxes[:, 2]
+        y2 = boxes[:, 3]
+        areas = (x2 - x1) * (y2 - y1)
+        order = scores.argsort()[::-1]
+        keep = []
+        while order.size > 0:
+            i = order[0]
+            keep.append(i)
+            xx1 = np.maximum(x1[i], x1[order[1:]])
+            yy1 = np.maximum(y1[i], y1[order[1:]])
+            xx2 = np.minimum(x2[i], x2[order[1:]])
+            yy2 = np.minimum(y2[i], y2[order[1:]])
+            w = np.maximum(0.0, xx2 - xx1)
+            h = np.maximum(0.0, yy2 - yy1)
+            inter = w * h
+            ovr = inter / (areas[i] + areas[order[1:]] - inter + 1e-8)
+            inds = np.where(ovr <= iou_threshold)[0]
+            order = order[inds + 1]
+        return keep
+
+PHASE1_MODEL_PATH    = "weights/chilli_pest_model.onnx"
+PHASE2_MODEL_PATH    = "weights/ip102_model.onnx"
+PHASE3_MODEL_PATH    = "weights/yolov8n.onnx"
 CONFIDENCE_THRESHOLD = 45.0
 PHASE1_MIN_CONF      = 0.40  # 40% — Phase 1 requirement
 
@@ -264,8 +413,7 @@ def _load_custom():
         return None
     log.info("phase1_model_loading")
     try:
-        from ultralytics import YOLO
-        _phase1_model = YOLO(PHASE1_MODEL_PATH)
+        _phase1_model = ONNXYOLO(PHASE1_MODEL_PATH)
         log.info("phase1_model_ready")
         return _phase1_model
     except Exception as e:
@@ -281,8 +429,7 @@ def _load_ip102_model():
         return None
     log.info("phase2_model_loading")
     try:
-        from ultralytics import YOLO
-        _phase2_model = YOLO(PHASE2_MODEL_PATH)
+        _phase2_model = ONNXYOLO(PHASE2_MODEL_PATH)
         log.info("phase2_model_ready")
         return _phase2_model
     except Exception as e:
@@ -298,8 +445,7 @@ def _load_yolov8n_model():
         return None
     log.info("phase3_model_loading")
     try:
-        from ultralytics import YOLO
-        _phase3_model = YOLO(PHASE3_MODEL_PATH)
+        _phase3_model = ONNXYOLO(PHASE3_MODEL_PATH)
         log.info("phase3_model_ready")
         return _phase3_model
     except Exception as e:

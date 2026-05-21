@@ -1,12 +1,11 @@
-flask==3.0.0
 flask-cors==4.0.0
 flask-limiter==3.5.0
 groq==1.2.0
-pillow
-gunicorn==26.0.0
 requests
 python-dotenv
 gradio_client
-ultralytics==8.1.0
-numpy>=1.23.0
+onnxruntime>=1.16.0
 opencv-python-headless>=4.8.0.0
+numpy>=1.23.0
+Flask==3.0.0
+gunicorn==26.0.0

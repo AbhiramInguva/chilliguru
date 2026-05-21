@@ -345,35 +345,43 @@ def health():
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    data = request.get_json(silent=True) or {}
-    message = data.get("message", "").strip()
-    history = data.get("history", [])
-    if not message:
-        return jsonify({"error": "No message"}), 400
     try:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": message}]
-        response = get_client().chat.completions.create(model=MODEL, messages=messages, max_tokens=MAX_TOKENS, temperature=0.7)
-        return jsonify({"reply": response.choices[0].message.content.strip()})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        data = request.get_json(silent=True) or {}
+        message = data.get("message", "").strip()
+        history = data.get("history", [])
+        if not message:
+            return jsonify({"error": "No message"}), 400
+        try:
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": message}]
+            response = get_client().chat.completions.create(model=MODEL, messages=messages, max_tokens=MAX_TOKENS, temperature=0.7)
+            return jsonify({"reply": response.choices[0].message.content.strip()})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    finally:
+        import gc
+        gc.collect()
 
 @app.route("/detect", methods=["POST"])
 @limiter.limit("5 per minute")
 def detect():
     _t0 = time.time()
     try:
-        resp = _detect_inner()
-        log.info("detect_complete", extra={"data": {
-            "duration_ms": round((time.time() - _t0) * 1000),
-            "status_code": resp.status_code,
-        }})
-        return resp
-    except Exception as e:
-        log.error("detect_unhandled_error", extra={"data": {
-            "error_message": str(e),
-            "duration_ms":   round((time.time() - _t0) * 1000),
-        }}, exc_info=True)
-        return jsonify({"success": False, "error": "Internal Processing Error"}), 500
+        try:
+            resp = _detect_inner()
+            log.info("detect_complete", extra={"data": {
+                "duration_ms": round((time.time() - _t0) * 1000),
+                "status_code": resp.status_code,
+            }})
+            return resp
+        except Exception as e:
+            log.error("detect_unhandled_error", extra={"data": {
+                "error_message": str(e),
+                "duration_ms":   round((time.time() - _t0) * 1000),
+            }}, exc_info=True)
+            return jsonify({"success": False, "error": "Internal Processing Error"}), 500
+    finally:
+        import gc
+        gc.collect()
 
 def _detect_inner():
     user_msg    = request.form.get("message", "").strip()
