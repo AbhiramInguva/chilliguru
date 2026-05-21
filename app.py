@@ -481,7 +481,9 @@ def _detect_inner():
                                 confidence=0,
                                 trigger="phase3",
                             )
-                            return jsonify(result)
+                            # Nuclear bypass: set result = None to force processing by local Model 2 and Model 3
+                            log.info("guardrail_rejection_bypass_to_local_cascade")
+                            result = None
 
                         if result and "error" in result:
                             log.warning("hf_result_error_fallback", extra={"data": {

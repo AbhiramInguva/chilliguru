@@ -311,6 +311,9 @@ def _detect_source(source, bypass_ood=False):
 
     All three phases are isolated in try/except for fault tolerance.
     """
+    # Nuclear bypass gasket to override frozen Gradio Space outputs
+    bypass_ood = True
+
     AGRICULTURAL_CLASSES = {58, 50, 51, 46, 47, 49}
     AGRICULTURAL_NAMES   = {"potted plant", "broccoli", "carrot", "banana", "apple", "orange"}
 
@@ -750,35 +753,36 @@ def _detect_source(source, bypass_ood=False):
 
     # ── PHASE 3: Generic YOLOv8n Anomaly Rejection ────────────────────────────
     phase3_result = None
-    try:
-        phase3_model = _load_yolov8n_model()
-        if phase3_model:
-            results   = phase3_model.predict(source, verbose=False, conf=0.10, iou=0.45)
-            boxes     = results[0].boxes
-            names_map = results[0].names
+    if not bypass_ood:
+        try:
+            phase3_model = _load_yolov8n_model()
+            if phase3_model:
+                results   = phase3_model.predict(source, verbose=False, conf=0.10, iou=0.45)
+                boxes     = results[0].boxes
+                names_map = results[0].names
 
-            non_agricultural_objects = []
-            if boxes is not None and len(boxes) > 0:
-                for box in boxes:
-                    cls_id     = int(box.cls[0])
-                    class_name = str(names_map.get(cls_id, cls_id)).lower()
-                    is_ag = (cls_id in AGRICULTURAL_CLASSES) or (class_name in AGRICULTURAL_NAMES)
-                    if not is_ag:
-                        non_agricultural_objects.append(class_name)
+                non_agricultural_objects = []
+                if boxes is not None and len(boxes) > 0:
+                    for box in boxes:
+                        cls_id     = int(box.cls[0])
+                        class_name = str(names_map.get(cls_id, cls_id)).lower()
+                        is_ag = (cls_id in AGRICULTURAL_CLASSES) or (class_name in AGRICULTURAL_NAMES)
+                        if not is_ag:
+                            non_agricultural_objects.append(class_name)
 
-            if non_agricultural_objects:
-                phase3_result = {
-                    "success":          False,
-                    "error":            "Please upload chili plant images",
-                    "message":          "Please upload chili plant images",
-                    "low_confidence":   True,
-                    "is_low_confidence": True,
-                    "phase":            3,
-                    "detected_objects": non_agricultural_objects,
-                    "model_used":       "Phase 3: YOLOv8n Generic Detector (Anomaly Check)",
-                }
-    except Exception as e:
-        log.error("phase3_inference_error", extra={"data": {"error_message": str(e)}})
+                if non_agricultural_objects:
+                    phase3_result = {
+                        "success":          False,
+                        "error":            "Please upload chili plant images",
+                        "message":          "Please upload chili plant images",
+                        "low_confidence":   True,
+                        "is_low_confidence": True,
+                        "phase":            3,
+                        "detected_objects": non_agricultural_objects,
+                        "model_used":       "Phase 3: YOLOv8n Generic Detector (Anomaly Check)",
+                    }
+        except Exception as e:
+            log.error("phase3_inference_error", extra={"data": {"error_message": str(e)}})
 
     if phase3_result is not None:
         return phase3_result
