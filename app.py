@@ -690,6 +690,46 @@ def _detect_inner():
             label      = top.get("label", "unknown pest")
             telugu     = top.get("telugu", "")
             confidence = top.get("confidence", 0)
+
+            # Enforce an absolute confidence threshold floor (0.80 / 80%)
+            try:
+                conf_val = float(confidence)
+            except (ValueError, TypeError):
+                conf_val = 0.0
+            
+            # Normalize scale to 0.0-1.0 if greater than 1.0 (since confidence could be out of 100.0)
+            norm_conf = conf_val / 100.0 if conf_val > 1.0 else conf_val
+
+            if norm_conf < 0.80:
+                request_id = g.get("request_id", "")
+                top_label = label
+                conf = conf_val
+                
+                # Standard Structured Warning Log
+                log.warning("low_confidence_prediction_blocked", extra={"data": {
+                    "top_class": top_label,
+                    "confidence": conf
+                }})
+                
+                # Intentional Raw Structured Event Log matching prompt requirements exactly
+                import sys
+                sys.stdout.write(json.dumps({
+                    "event": "low_confidence_prediction_blocked",
+                    "request_id": request_id,
+                    "top_class": top_label,
+                    "confidence": conf
+                }) + "\n")
+                sys.stdout.flush()
+
+                # Return standardized cannot identify card
+                response_obj = make_response(jsonify({
+                    "status": "error",
+                    "message": "Cannot reliably identify image features. Please ensure you are uploading a clear, well-lit photo of a chilli plant or pest anomaly.",
+                    "request_id": request_id
+                }))
+                response_obj.status_code = 422
+                return response_obj
+
             kind       = top.get("type", "pest")
             detection  = top
             # Data flywheel: low-confidence detections → shadow dataset for review
