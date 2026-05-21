@@ -72,21 +72,32 @@ def rate_limit_exceeded(e):
         "error":   "Too many uploads. Please wait a minute before trying again.",
     }), 429
 
-log.info("hf_connect_start")
-hf_client = None
-hf_connect_error = None
-try:
-    hf_token = os.environ.get("HF_TOKEN")
-    try:
-        hf_client = Client("inguvaaa/comprehensive", token=hf_token, verbose=False,
-                           httpx_kwargs={"timeout": 30.0})
-    except TypeError:
-        # Older gradio_client versions don't accept httpx_kwargs — fall back gracefully
-        hf_client = Client("inguvaaa/comprehensive", token=hf_token, verbose=False)
-    log.info("hf_connect_ok")
-except Exception as exc:
-    hf_connect_error = str(exc)
-    log.error("hf_connect_fail", extra={"data": {"error_message": hf_connect_error}})
+_hf_client = None
+_hf_connect_error = None
+_hf_initialized = False
+
+def get_hf_client():
+    global _hf_client, _hf_connect_error, _hf_initialized
+    if not _hf_initialized:
+        log.info("hf_connect_start")
+        try:
+            hf_token = os.environ.get("HF_TOKEN")
+            try:
+                _hf_client = Client("inguvaaa/comprehensive", token=hf_token, verbose=False,
+                                   httpx_kwargs={"timeout": 30.0})
+            except TypeError:
+                # Older gradio_client versions don't accept httpx_kwargs — fall back gracefully
+                _hf_client = Client("inguvaaa/comprehensive", token=hf_token, verbose=False)
+            log.info("hf_connect_ok")
+        except Exception as exc:
+            _hf_connect_error = str(exc)
+            log.error("hf_connect_fail", extra={"data": {"error_message": _hf_connect_error}})
+        _hf_initialized = True
+    return _hf_client
+
+def get_hf_connect_error():
+    global _hf_connect_error
+    return _hf_connect_error
 
 # ── Circuit Breaker state ─────────────────────────────────────────────────────
 HF_CIRCUIT_OPEN      = False
@@ -132,8 +143,9 @@ def get_client():
 
 
 def call_hf_detector(image_bytes):
-    if hf_client is None:
-        return {"error": f"HF client unavailable: {hf_connect_error or 'startup connection failed'}"}
+    client = get_hf_client()
+    if client is None:
+        return {"error": f"HF client unavailable: {get_hf_connect_error() or 'startup connection failed'}"}
 
     tmp_path = None
     _t_hf = time.time()
@@ -143,7 +155,7 @@ def call_hf_detector(image_bytes):
             tmp_path = tmp.name
 
         log.info("hf_call_start")
-        result = hf_client.predict(handle_file(tmp_path), api_name="/predict")
+        result = client.predict(handle_file(tmp_path), api_name="/predict")
         hf_ms = round((time.time() - _t_hf) * 1000)
         _cb_record_success()
         log.info("hf_call_ok", extra={"data": {"duration_ms": hf_ms, "phase": "hf"}})
@@ -325,7 +337,7 @@ def index():
 def health():
     return jsonify({
         "status": "ok",
-        "hf_connected": hf_client is not None,
+        "hf_connected": get_hf_client() is not None,
         "groq_ready": bool(os.getenv("GROQ_API_KEY", "")),
     })
 
@@ -412,7 +424,7 @@ def _detect_inner():
             log.warning("circuit_breaker_skip_hf")
         else:
             try:
-                if hf_client is not None:
+                if get_hf_client() is not None:
                     result = call_hf_detector(image_bytes)
                     
                     # 1. Gatekeeper strip wrappers

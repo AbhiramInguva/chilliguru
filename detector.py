@@ -30,10 +30,6 @@ CLASS_THRESHOLDS = {
     "Armyworm": 0.50,         # Standard threshold for surface caterpillars
     "Aphids": 0.45
 }
-
-if not Path(PHASE1_MODEL_PATH).exists():
-    log.warning("phase1_model_missing", extra={"data": {"path": PHASE1_MODEL_PATH}})
-
 _phase1_model = None
 _phase2_model = None
 _phase3_model = None
@@ -234,6 +230,7 @@ def _load_custom():
     if _phase1_model is not None:
         return _phase1_model
     if not Path(PHASE1_MODEL_PATH).exists():
+        log.warning("phase1_model_missing", extra={"data": {"path": PHASE1_MODEL_PATH}})
         return None
     log.info("phase1_model_loading")
     try:
