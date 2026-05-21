@@ -143,5 +143,79 @@ class TestFieldScenarios(unittest.TestCase):
             # Verify local detector was called
             mock_detect_local.assert_called_once()
 
+    @patch("app.get_hf_client")
+    @patch("app._cb_is_open")
+    @patch("app.detector.detect_from_memory")
+    def test_mealybug_class_4_mapping(self, mock_detect_local, mock_cb, mock_get_client):
+        """
+        Class 4 / Mealybug predictions should be correctly mapped to "Mealybugs [పిండి పురుగు]".
+        """
+        mock_cb.return_value = False
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        
+        # Simulating HF Space returning Class 4 / "Mealybugs" or "Pest-Phenacoccus solenopsis (Mealybug)" response
+        mock_client.predict.return_value = {
+            "success": True,
+            "low_confidence": False,
+            "is_low_confidence": False,
+            "top_detection": {
+                "label": "Pest-Phenacoccus solenopsis (Mealybug)",
+                "telugu": "తెల్ల దూది పురుగు",
+                "confidence": 92.0,
+                "type": "pest",
+                "class_id": 4,
+                "raw_label": "Pest-Phenacoccus solenopsis (Mealybug)"
+            },
+            "all_detections": [
+                {
+                    "label": "Pest-Phenacoccus solenopsis (Mealybug)",
+                    "telugu": "తెల్ల దూది పురుగు",
+                    "confidence": 92.0,
+                    "type": "pest",
+                    "class_id": 4,
+                    "raw_label": "Pest-Phenacoccus solenopsis (Mealybug)"
+                }
+            ]
+        }
+        
+        # Mock Groq client to avoid network calls during SSE stream generation
+        with patch("app.get_client") as mock_groq:
+            mock_comp = MagicMock()
+            mock_groq.return_value.chat.completions.create.return_value = [mock_comp]
+            mock_comp.choices = [MagicMock()]
+            mock_comp.choices[0].delta.content = "Advisory for mealybugs"
+            
+            data = {
+                "image": (io.BytesIO(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00"), "mealybug.jpg"),
+                "message": "test mealybug translation"
+            }
+            
+            response = self.client.post("/detect", data=data, content_type="multipart/form-data")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.mimetype, "text/event-stream")
+            
+            # Read the SSE response stream to make sure we parse the JSON event with "top_detection"
+            lines = list(response.response)
+            # Find the line starting with "data: " that contains the JSON payload
+            detection_data = None
+            for line in lines:
+                decoded = line.decode("utf-8").strip()
+                if decoded.startswith("data: "):
+                    payload = decoded[6:]
+                    try:
+                        parsed = json.loads(payload)
+                        if parsed.get("type") == "meta" and "detection" in parsed:
+                            detection_data = parsed.get("detection")
+                            break
+                    except json.JSONDecodeError:
+                        continue
+            
+            self.assertIsNotNone(detection_data)
+            self.assertEqual(detection_data["label"], "Mealybugs [పిండి పురుగు]")
+            self.assertEqual(detection_data["telugu"], "పిండి పురుగు")
+            self.assertEqual(detection_data["raw_label"], "Mealybugs")
+
 if __name__ == "__main__":
     unittest.main()
+
