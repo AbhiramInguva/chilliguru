@@ -8,7 +8,7 @@ import threading
 import time
 import traceback
 import uuid
-from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context, g, has_request_context
+from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context, g, has_request_context, make_response
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -474,7 +474,10 @@ def _detect_inner():
         image_file.seek(0)
         if file_size > MAX_IMAGE_BYTES:
             log.warning("payload_too_large", extra={"data": {"size_bytes": file_size}})
-            return jsonify({"error": "Image exceeds the 5 MB size limit"}), 413
+            request_id = g.get("request_id", "")
+            response_obj = make_response(jsonify({"error": "Payload too large", "request_id": request_id}))
+            response_obj.status_code = 413
+            return response_obj
 
         # ── Magic-byte type verification (first 12 bytes only) ────────────────
         header = image_file.read(12)
@@ -483,11 +486,15 @@ def _detect_inner():
         is_known = is_webp or any(header.startswith(sig) for sig in _IMAGE_SIGNATURES if sig != b'RIFF')
         if not is_known:
             log.warning("invalid_image_magic", extra={"data": {"header_hex": header.hex()}})
-            return jsonify({
+            request_id = g.get("request_id", "")
+            response_obj = make_response(jsonify({
                 "success": False,
                 "error":   "Invalid or corrupted image format submitted",
                 "phase":   0,
-            }), 400
+                "request_id": request_id
+            }))
+            response_obj.status_code = 415
+            return response_obj
 
         # ── Full read (validation passed) ─────────────────────────────────────
         image_bytes = image_file.read()
