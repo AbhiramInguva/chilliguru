@@ -12,6 +12,12 @@ from pathlib import Path
 import warnings
 warnings.filterwarnings("ignore")
 
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+except Exception:
+    pass
+
 log = logging.getLogger("chilliguru.detector")
 
 PHASE1_MODEL_PATH    = "chilli_pest_model.pt"
@@ -41,6 +47,34 @@ def _load_expert_classifier():
     if _EXPERT_CLASSIFIER_CACHE is None:
         _EXPERT_CLASSIFIER_CACHE = "ExpertClassifierBackbone_Placeholder"
     return _EXPERT_CLASSIFIER_CACHE
+
+def prewarm_models():
+    """Warm up/pre-warm local cascade models with a mock zero-matrix pass to clear startup spikes."""
+    try:
+        import numpy as np
+        log.info("prewarm_models_loading")
+        p1 = _load_custom()
+        p2 = _load_ip102_model()
+        p3 = _load_yolov8n_model()
+        
+        # 640x640x3 zero matrix as mock array
+        dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+        
+        if p1 is not None:
+            log.info("prewarm_phase1_start")
+            p1.predict(dummy, verbose=False, conf=0.10, iou=0.45)
+            log.info("prewarm_phase1_ready")
+        if p2 is not None:
+            log.info("prewarm_phase2_start")
+            p2.predict(dummy, verbose=False, conf=0.10, iou=0.45)
+            log.info("prewarm_phase2_ready")
+        if p3 is not None:
+            log.info("prewarm_phase3_start")
+            p3.predict(dummy, verbose=False, conf=0.10, iou=0.45)
+            log.info("prewarm_phase3_ready")
+        log.info("prewarm_models_completed")
+    except Exception as e:
+        log.warning("prewarm_models_failed", extra={"data": {"error": str(e)}})
 
 def _save_to_shadow_dataset(source, label, confidence):
     """Write blocked or low-confidence detection images to shadow_dataset directory."""

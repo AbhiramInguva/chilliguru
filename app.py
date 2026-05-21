@@ -601,6 +601,13 @@ def _detect_inner():
         },
     )
 
+# ── Pre-warm models ───────────────────────────────────────────────────────────
+log.info("prewarm_start")
+try:
+    detector.prewarm_models()
+except Exception as e:
+    log.warning("prewarm_failed", extra={"data": {"error": str(e)}})
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(debug=False, host="0.0.0.0", port=port)
