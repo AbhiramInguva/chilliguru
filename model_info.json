@@ -62,5 +62,8 @@
     "epochs": 150,
     "augmentation": "heavy (mixup, copy_paste, geometric, color)",
     "merged_from": "18 classes → 15 classes"
+  },
+  "class_array_schema": {
+    "4": "Mealybugs"
   }
 }

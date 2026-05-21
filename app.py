@@ -19,6 +19,13 @@ import detector
 class SchemaValidationError(Exception):
     pass
 
+TRANSLATION_DICTIONARY = {
+    4: "Mealybugs [పిండి పురుగు]",
+    "4": "Mealybugs [పిండి పురుగు]",
+    "Mealybugs": "Mealybugs [పిండి పురుగు]",
+    "Mealybug": "Mealybugs [పిండి పురుగు]"
+}
+
 # ── Structured JSON logger ────────────────────────────────────────────────────
 class StructuredJsonFormatter(logging.Formatter):
     def format(self, record):
@@ -685,6 +692,19 @@ def _detect_inner():
                     "duration_ms":   round(duration_us / 1000.0),
                 }}, exc_info=True)
                 result = {"error": str(local_exc)}
+
+        # Downstream translation mapping for Class 4 / Mealybugs
+        if isinstance(result, dict):
+            for det in [result.get("top_detection")] + result.get("all_detections", []):
+                if isinstance(det, dict):
+                    lbl = det.get("label", "")
+                    raw_lbl = det.get("raw_label", "")
+                    cls_val = det.get("class_id")
+                    if lbl in (4, "4", "Mealybugs", "Mealybug") or raw_lbl in (4, "4", "Mealybugs", "Mealybug") or cls_val in (4, "4"):
+                        det["label"] = "Mealybugs [పిండి పురుగు]"
+                        det["telugu"] = "పిండి పురుగు"
+                        det["raw_label"] = "Mealybugs"
+                        det["type"] = "pest"
 
         top_label = (result.get("top_detection", {}) or {}).get("label") if isinstance(result, dict) else None
         log.info("detector_result", extra={"data": {

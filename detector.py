@@ -24,6 +24,14 @@ opts.intra_op_num_threads = 1
 opts.inter_op_num_threads = 1
 ai_session = ort.InferenceSession("weights/ai_generator_filter.onnx", opts)
 
+TRANSLATION_DICTIONARY = {
+    4: "Mealybugs [పిండి పురుగు]",
+    "4": "Mealybugs [పిండి పురుగు]",
+    "Mealybugs": "Mealybugs [పిండి పురుగు]",
+    "Mealybug": "Mealybugs [పిండి పురుగు]"
+}
+
+
 
 class ListOrValue:
     def __init__(self, val):
@@ -328,6 +336,10 @@ def _get_friendly_name(raw_label):
         "Pest-White Fly":                        ("Whitefly",                           "తెల్ల ఈగ పురుగు",                    "pest"),
         "Red Mites leafs":                       ("Red Spider Mites – Leaf Damage",     "ఎర్ర సాలె పురుగు ఆకు నష్టం",        "pest"),
         "White Fly-Leafs":                       ("Whitefly – Leaf Damage",             "తెల్ల ఈగ ఆకు నష్టం",                "pest"),
+        "4":                                     ("Mealybugs",                         "పిండి పురుగు",                        "pest"),
+        4:                                       ("Mealybugs",                         "పిండి పురుగు",                        "pest"),
+        "Mealybugs":                             ("Mealybugs",                         "పిండి పురుగు",                        "pest"),
+        "Mealybug":                              ("Mealybugs",                         "పిండి పురుగు",                        "pest"),
     }
     english, telugu, kind = mapping.get(raw_label, (raw_label, "", "unknown"))
     return english, telugu, kind
@@ -459,6 +471,8 @@ def _load_yolov8n_model():
 
 def _resolve_label(raw_label, cls_id):
     """Return the canonical CLASS_NAMES entry for a detected label."""
+    if cls_id == 4 or str(cls_id) == "4" or raw_label in ("Mealybugs", "Mealybug"):
+        return "Mealybugs"
     if raw_label in PEST_INFO:
         return raw_label
     # try matching by class index if model returns index-based names
