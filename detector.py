@@ -1,3 +1,5 @@
+import matplotlib
+matplotlib.use('Agg')
 """
 detector.py — ChilliGuru Pest & Disease Detector (3-Phase Cascade Pipeline)
 Architecture:
@@ -11,12 +13,6 @@ import logging
 from pathlib import Path
 import warnings
 warnings.filterwarnings("ignore")
-
-try:
-    import matplotlib
-    matplotlib.use("Agg")
-except Exception:
-    pass
 
 log = logging.getLogger("chilliguru.detector")
 
@@ -333,6 +329,13 @@ def _sev(c):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _detect_source(source, bypass_ood=False):
+    try:
+        return _detect_source_impl(source, bypass_ood=bypass_ood)
+    finally:
+        import gc
+        gc.collect()
+
+def _detect_source_impl(source, bypass_ood=False):
     """
     3-Phase Cascaded Inference Engine (shared internal implementation).
 

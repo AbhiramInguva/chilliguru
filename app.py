@@ -1,3 +1,5 @@
+import matplotlib
+matplotlib.use('Agg')
 import json
 import logging
 import os
