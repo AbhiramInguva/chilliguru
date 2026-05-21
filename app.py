@@ -406,6 +406,7 @@ def _detect_inner():
             return jsonify({"error": "Empty file"}), 400
 
         result = None
+        force_bypass_ood = False
         # Try HF space call first (skip if circuit is open)
         if _cb_is_open():
             log.warning("circuit_breaker_skip_hf")
@@ -431,7 +432,7 @@ def _detect_inner():
                     else:
                         response_data = result
 
-                    gatekeeper_label = str(response_data).strip().lower() if response_data is not None else ""
+                    label = str(response_data).strip().lower() if response_data is not None else ""
                     
                     # Check confidence score returned by the guardrail
                     conf_val = None
@@ -441,34 +442,52 @@ def _detect_inner():
                         elif "top_detection" in result and isinstance(result["top_detection"], dict):
                             conf_val = result["top_detection"].get("confidence")
 
-                    is_zero_confidence = (conf_val == 0 or conf_val == 0.0)
-                    
-                    # Determine if it indicates a non-chilli rejection
-                    is_guardrail_rejection = False
-                    if "non_chilli" in gatekeeper_label or gatekeeper_label == "0":
-                        is_guardrail_rejection = True
-                    if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
-                        is_guardrail_rejection = True
+                    try:
+                        conf = float(conf_val) if conf_val is not None else 0.0
+                    except Exception:
+                        conf = None
 
-                    # 2. Temporary bypass logic gasket: if confidence is explicitly 0 or 0.0, let it bypass the short-circuit
-                    if is_guardrail_rejection and not is_zero_confidence:
-                        # Data flywheel: non-chilli guardrail image → shadow dataset
-                        _trigger_shadow_save(
-                            image_bytes,
-                            label="non_chilli",
-                            confidence=0,
-                            trigger="phase3",
-                        )
-                        return jsonify(result)
+                    # Hotfix Gasket to handle the new endpoint structure
+                    is_hotfix_triggered = False
+                    if label == "non_chilli" and conf == 0:
+                        is_hotfix_triggered = True
+                    elif conf is None:
+                        is_hotfix_triggered = True
+
+                    if is_hotfix_triggered:
+                        # Hotfix Gasket to handle the new endpoint structure
+                        if label == "non_chilli" and conf == 0:
+                            label = "chilli"
+                            conf = 1.0
+                            is_low_confidence = False
+                        
+                        # Set to run local cascade with OOD check bypassed
+                        force_bypass_ood = True
+                        result = None
                     
-                    if is_guardrail_rejection and is_zero_confidence:
-                        log.info("guardrail_zero_confidence_bypass_gasket")
-                        result = None
-                    if result and "error" in result:
-                        log.warning("hf_result_error_fallback", extra={"data": {
-                            "error_message": result["error"],
-                        }})
-                        result = None
+                    if result is not None:
+                        # Process as normal if not overridden
+                        is_guardrail_rejection = False
+                        if "non_chilli" in label or label == "0":
+                            is_guardrail_rejection = True
+                        if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
+                            is_guardrail_rejection = True
+
+                        if is_guardrail_rejection:
+                            # Data flywheel: non-chilli guardrail image → shadow dataset
+                            _trigger_shadow_save(
+                                image_bytes,
+                                label="non_chilli",
+                                confidence=0,
+                                trigger="phase3",
+                            )
+                            return jsonify(result)
+
+                        if result and "error" in result:
+                            log.warning("hf_result_error_fallback", extra={"data": {
+                                "error_message": result["error"],
+                            }})
+                            result = None
                 else:
                     log.warning("hf_client_unavailable_fallback")
             except Exception as exc:
@@ -480,7 +499,7 @@ def _detect_inner():
             log.info("local_cascade_start")
             _t_local = time.time()
             try:
-                result = detector.detect_from_memory(image_bytes)
+                result = detector.detect_from_memory(image_bytes, bypass_ood=force_bypass_ood)
                 log.info("local_cascade_ok", extra={"data": {
                     "duration_ms": round((time.time() - _t_local) * 1000),
                     "phase":       result.get("phase") if isinstance(result, dict) else None,

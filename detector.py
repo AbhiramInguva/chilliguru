@@ -301,7 +301,7 @@ def _sev(c):
 # Internal cascade engine
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _detect_source(source):
+def _detect_source(source, bypass_ood=False):
     """
     3-Phase Cascaded Inference Engine (shared internal implementation).
 
@@ -377,38 +377,41 @@ def _detect_source(source):
                 "phase": 1
             }
 
-    try:
-        phase3_model = _load_yolov8n_model()
-        if phase3_model:
-            results   = phase3_model.predict(source, verbose=False, conf=0.10, iou=0.45)
-            boxes     = results[0].boxes
-            names_map = results[0].names
+    if not bypass_ood:
+        try:
+            phase3_model = _load_yolov8n_model()
+            if phase3_model:
+                results   = phase3_model.predict(source, verbose=False, conf=0.10, iou=0.45)
+                boxes     = results[0].boxes
+                names_map = results[0].names
 
-            if boxes is None or len(boxes) == 0:
-                return {
-                    "success": False,
-                    "error": "Please upload chili plant images",
-                    "phase": 3,
-                    "low_confidence": True,
-                }
+                if boxes is None or len(boxes) == 0:
+                    return {
+                        "success": False,
+                        "error": "Please upload chili plant images",
+                        "phase": 3,
+                        "low_confidence": True,
+                        "is_low_confidence": True,
+                    }
 
-            purely_non_agricultural = True
-            for box in boxes:
-                cls_id     = int(box.cls[0])
-                class_name = str(names_map.get(cls_id, cls_id)).lower()
-                if (cls_id in AGRICULTURAL_CLASSES) or (class_name in AGRICULTURAL_NAMES):
-                    purely_non_agricultural = False
-                    break
+                purely_non_agricultural = True
+                for box in boxes:
+                    cls_id     = int(box.cls[0])
+                    class_name = str(names_map.get(cls_id, cls_id)).lower()
+                    if (cls_id in AGRICULTURAL_CLASSES) or (class_name in AGRICULTURAL_NAMES):
+                        purely_non_agricultural = False
+                        break
 
-            if purely_non_agricultural:
-                return {
-                    "success": False,
-                    "error": "Please upload chili plant images",
-                    "phase": 3,
-                    "low_confidence": True,
-                }
-    except Exception as e:
-        log.error("ood_check_error", extra={"data": {"error_message": str(e)}})
+                if purely_non_agricultural:
+                    return {
+                        "success": False,
+                        "error": "Please upload chili plant images",
+                        "phase": 3,
+                        "low_confidence": True,
+                        "is_low_confidence": True,
+                    }
+        except Exception as e:
+            log.error("ood_check_error", extra={"data": {"error_message": str(e)}})
 
     # ── PHASE 1: Primary Chilli Detector ──────────────────────────────────────
     phase1_result = None
@@ -795,7 +798,7 @@ def _detect_source(source):
 # Public entrypoints
 # ─────────────────────────────────────────────────────────────────────────────
 
-def detect(image_path):
+def detect(image_path, bypass_ood=False):
     """
     Disk-based public entrypoint — original API preserved.
 
@@ -804,14 +807,14 @@ def detect(image_path):
     continue to work exactly as before.
     """
     if isinstance(image_path, (dict, list, tuple)):
-        return _detect_source(image_path)
+        return _detect_source(image_path, bypass_ood=bypass_ood)
     img = Path(image_path)
     if not img.exists():
         return {"success": False, "error": f"Image not found: {image_path}"}
-    return _detect_source(str(img))
+    return _detect_source(str(img), bypass_ood=bypass_ood)
 
 
-def detect_from_memory(image_bytes: bytes):
+def detect_from_memory(image_bytes: bytes, bypass_ood=False):
     """
     Zero-I/O public entrypoint — decodes the image entirely in RAM.
 
@@ -825,7 +828,7 @@ def detect_from_memory(image_bytes: bytes):
       the response path never throws an unhandled exception.
     """
     if isinstance(image_bytes, (dict, list, tuple)):
-        return _detect_source(image_bytes)
+        return _detect_source(image_bytes, bypass_ood=bypass_ood)
     # ── Attempt in-memory decode ──────────────────────────────────────────────
     try:
         import numpy as np
@@ -836,7 +839,7 @@ def detect_from_memory(image_bytes: bytes):
             raise ValueError("cv2.imdecode returned None — unrecognised image format")
         log.info("detect_from_memory_decode_ok",
                  extra={"data": {"shape": str(img_array.shape)}})
-        return _detect_source(img_array)
+        return _detect_source(img_array, bypass_ood=bypass_ood)
 
     except Exception as decode_exc:
         log.warning("detect_from_memory_fallback",
@@ -849,7 +852,7 @@ def detect_from_memory(image_bytes: bytes):
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             tmp.write(image_bytes)
             tmp_path = tmp.name
-        return detect(tmp_path)
+        return detect(tmp_path, bypass_ood=bypass_ood)
     except Exception as fallback_exc:
         log.error("detect_from_memory_fallback_error",
                   extra={"data": {"error": str(fallback_exc)}})
