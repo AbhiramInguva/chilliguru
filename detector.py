@@ -1,5 +1,3 @@
-import matplotlib
-matplotlib.use('Agg')
 """
 detector.py — ChilliGuru Pest & Disease Detector (3-Phase Cascade Pipeline)
 Architecture:
