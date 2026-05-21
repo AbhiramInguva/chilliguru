@@ -257,17 +257,17 @@ def _save_to_shadow_dataset(source, label, confidence):
     except Exception as exc:
         log.warning("shadow_save_fail", extra={"data": {"error": str(exc)}})
 
-def _apply_model3_sigmoid_activation(logits_dict):
+def _apply_model3_softmax_activation(logits_dict, T=2.5):
     """
-    Apply independent Sigmoid activation to class logits for Model 3.
-    Treats each pest probability as an independent binary classification score
-    rather than a competitive Softmax distribution.
+    Apply Softmax activation to class logits for Model 3 with temperature scaling.
     """
     import numpy as np
-    probabilities = {}
-    for name, logit in logits_dict.items():
-        probabilities[name] = 1.0 / (1.0 + np.exp(-logit))
-    return probabilities
+    names = list(logits_dict.keys())
+    logits = np.array([logits_dict[name] for name in names], dtype=float)
+    scaled_logits = logits / T
+    exp_logits = np.exp(scaled_logits - np.max(scaled_logits))
+    probs = exp_logits / np.sum(exp_logits)
+    return {name: float(prob) for name, prob in zip(names, probs)}
 
 # ── 18 class labels from VIT-AP model (Phase 1) ────────────────────────────────
 CLASS_NAMES = [
@@ -644,7 +644,7 @@ def _detect_source_impl(source, bypass_ood=False):
                     try:
                         expert_model = _load_expert_classifier()
                         if expert_model is not None and cropped_patch is not None:
-                            # Treat each pest probability as an independent Sigmoid score
+                            # Treat each pest probability as an independent logit
                             # Let's generate logits based on raw confidence: logit = log(p / (1 - p))
                             import numpy as np
                             p_raw = min(max(confidence / 100.0, 0.01), 0.99)
@@ -656,15 +656,15 @@ def _detect_source_impl(source, bypass_ood=False):
                                 "Aphids": logit_val if "aphid" in model_name.lower() else -2.0,
                             }
                             
-                            sigmoid_probs = _apply_model3_sigmoid_activation(logits_dict)
+                            softmax_probs = _apply_model3_softmax_activation(logits_dict, T=2.5)
                             
                             # Completely reject any "Fruit Borer" classification if the independent score is less than 0.85
                             if "fruit borer" in model_name.lower():
-                                borer_prob = sigmoid_probs.get("Fruit Borer", 0.0)
+                                borer_prob = softmax_probs.get("Fruit Borer", 0.0)
                                 if borer_prob < 0.85:
                                     # Rejected! Fallback to None (which falls back to raw or next candidate)
                                     expert_label = None
-                                    log.info("Model 3: Fruit Borer classification rejected (Sigmoid score below 0.85)")
+                                    log.info("Model 3: Fruit Borer classification rejected (Softmax score below 0.85)")
                                 else:
                                     expert_label = _resolve_label(model_name, cls_id)
                             else:
@@ -699,6 +699,62 @@ def _detect_source_impl(source, bypass_ood=False):
                 top = detections[0]
 
                 friendly_eng, _, _ = _get_friendly_name(top["raw_label"])
+
+                # Bounding-box aspect and area ratio constraint
+                is_microscopic = (
+                    "red spider mites" in friendly_eng.lower() or 
+                    "aphid" in friendly_eng.lower() or
+                    "mites" in top["raw_label"].lower() or
+                    "aphid" in top["raw_label"].lower()
+                )
+
+                if is_microscopic and top["confidence"] >= CONFIDENCE_THRESHOLD:
+                    img_h, img_w = 640, 640
+                    try:
+                        if isinstance(source, (str, Path)):
+                            import cv2
+                            cv_img = cv2.imread(str(source))
+                            if cv_img is not None:
+                                img_h, img_w = cv_img.shape[:2]
+                        elif isinstance(source, np.ndarray):
+                            img_h, img_w = source.shape[:2]
+                    except Exception as shape_err:
+                        log.warning("geometric_check_shape_error", extra={"data": {"error": str(shape_err)}})
+
+                    total_area = img_h * img_w
+                    coords = top.get("coordinates", {})
+                    xmin = coords.get("xmin", 0)
+                    ymin = coords.get("ymin", 0)
+                    xmax = coords.get("xmax", 0)
+                    ymax = coords.get("ymax", 0)
+
+                    box_w = xmax - xmin
+                    box_h = ymax - ymin
+                    box_area = box_w * box_h
+                    aspect_ratio = float(box_w) / float(box_h) if box_h > 0 else 0.0
+                    area_ratio = box_area / total_area if total_area > 0 else 0.0
+
+                    if area_ratio > 0.25:
+                        log.warning("geometric_scale_override_triggered", extra={"data": {
+                            "original_label": top["raw_label"],
+                            "confidence": top["confidence"],
+                            "area_ratio": area_ratio,
+                            "aspect_ratio": aspect_ratio,
+                            "box_area": box_area,
+                            "total_area": total_area
+                        }})
+                        # Route the raw array directly to static/uploads/shadow_dataset/
+                        _save_to_shadow_dataset(source, f"geometric_override_{top['raw_label']}", top["confidence"])
+
+                        # Force-override the prediction
+                        top["raw_label"] = "crop_anomaly"
+                        top["label"] = "Crop Anomaly [పంట అసాధారణత]"
+                        top["type"] = "pest"
+                        top["symptoms"] = "Geometric scale check triggered: Microscopic pest diagnosis covering excessive frame area (>25%)."
+                        top["damage"] = ""
+                        # Re-evaluate friendly name
+                        friendly_eng, _, _ = _get_friendly_name(top["raw_label"])
+
                 # Intercept false fruit borer predictions
                 if "fruit borer" in friendly_eng.lower() or "fruit borer" in top["raw_label"].lower():
                     raw_conf_fraction = top["confidence"] / 100.0
@@ -714,7 +770,7 @@ def _detect_source_impl(source, bypass_ood=False):
                         }
 
                 if top["confidence"] >= (PHASE1_MIN_CONF * 100):
-                    if top["raw_label"] not in CLASS_NAMES:
+                    if top["raw_label"] not in CLASS_NAMES and top["raw_label"] != "crop_anomaly":
                         return {
                             "success": False,
                             "error":   "Please upload chili plant images",
@@ -729,6 +785,8 @@ def _detect_source_impl(source, bypass_ood=False):
                     
                     is_low = top["confidence"] < CONFIDENCE_THRESHOLD
                     if custom_thresh is not None and top["confidence"] < custom_thresh:
+                         is_low = True
+                    if top["raw_label"] == "crop_anomaly":
                          is_low = True
 
                     # Also check CLASS_THRESHOLDS mapping for low confidence setting
