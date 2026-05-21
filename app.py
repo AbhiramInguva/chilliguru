@@ -504,11 +504,23 @@ def _detect_inner():
         # AI Synthetic Payload Firewall Check (Model 0)
         try:
             synthetic_score = detector.check_synthetic(image_bytes)
-            if synthetic_score > 0.90:
-                log.warning("ai_synthetic_payload_blocked")
+            if synthetic_score > 0.85:
                 request_id = g.get("request_id", "")
+                
+                # Standard Structured Warning Log
+                log.warning("ai_generation_detected", extra={"data": {"status": "rejected"}})
+                
+                # Intentional Raw Structured Event Log matching prompt requirements exactly
+                import sys
+                sys.stdout.write(json.dumps({
+                    "event": "ai_generation_detected",
+                    "request_id": request_id,
+                    "status": "rejected"
+                }) + "\n")
+                sys.stdout.flush()
+
                 response_obj = make_response(jsonify({
-                    "error": "AI synthetic payload blocked",
+                    "error": "AI generated image matrices are blocked from agronomic diagnostic queues.",
                     "request_id": request_id
                 }))
                 response_obj.status_code = 400

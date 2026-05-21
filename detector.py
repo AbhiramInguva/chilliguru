@@ -22,7 +22,7 @@ log = logging.getLogger("chilliguru.detector")
 opts = ort.SessionOptions()
 opts.intra_op_num_threads = 1
 opts.inter_op_num_threads = 1
-ai_session = ort.InferenceSession("weights/ai_filter.onnx", opts)
+ai_session = ort.InferenceSession("weights/ai_generator_filter.onnx", opts)
 
 
 class ListOrValue:
