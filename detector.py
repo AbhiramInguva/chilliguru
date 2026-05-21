@@ -25,6 +25,12 @@ CLASS_SPECIFIC_THRESHOLDS = {
     "Pest-Helicoverpa armigera (Fruit Borer)": 75.0,
 }
 
+CLASS_THRESHOLDS = {
+    "Fruit Borer": 0.85,      # High mathematical bar to filter out false worm/aphid patterns
+    "Armyworm": 0.50,         # Standard threshold for surface caterpillars
+    "Aphids": 0.45
+}
+
 if not Path(PHASE1_MODEL_PATH).exists():
     log.warning("phase1_model_missing", extra={"data": {"path": PHASE1_MODEL_PATH}})
 
@@ -39,6 +45,44 @@ def _load_expert_classifier():
     if _EXPERT_CLASSIFIER_CACHE is None:
         _EXPERT_CLASSIFIER_CACHE = "ExpertClassifierBackbone_Placeholder"
     return _EXPERT_CLASSIFIER_CACHE
+
+def _save_to_shadow_dataset(source, label, confidence):
+    """Write blocked or low-confidence detection images to shadow_dataset directory."""
+    try:
+        import os, time, re, uuid
+        from pathlib import Path
+        import numpy as np
+        
+        shadow_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "static", "uploads", "shadow_dataset")
+        os.makedirs(shadow_dir, exist_ok=True)
+        
+        image_bytes = None
+        if isinstance(source, (str, Path)):
+            with open(str(source), "rb") as f:
+                image_bytes = f.read()
+        elif isinstance(source, np.ndarray):
+            import cv2
+            _, encoded_img = cv2.imencode(".jpg", source)
+            image_bytes = encoded_img.tobytes()
+            
+        if image_bytes:
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            slug = re.sub(r"[^a-z0-9]+", "_", str(label).lower()).strip("_") or "unknown"
+            conf_str = str(int(confidence))
+            uid = uuid.uuid4().hex[:6]
+            filename = f"blocked_{conf_str}_{slug}_{ts}_{uid}.jpg"
+            dest = os.path.join(shadow_dir, filename)
+            with open(dest, "wb") as f:
+                f.write(image_bytes)
+            log.info("shadow_save_ok", extra={"data": {
+                "filename": filename,
+                "bytes": len(image_bytes),
+                "label": label,
+                "conf": confidence,
+            }})
+    except Exception as exc:
+        log.warning("shadow_save_fail", extra={"data": {"error": str(exc)}})
 
 # ── 18 class labels from VIT-AP model (Phase 1) ────────────────────────────────
 CLASS_NAMES = [
@@ -371,6 +415,20 @@ def _detect_source(source):
                 detections.sort(key=lambda x: x["confidence"], reverse=True)
                 top = detections[0]
 
+                friendly_eng, _, _ = _get_friendly_name(top["raw_label"])
+                # Intercept false fruit borer predictions
+                if "fruit borer" in friendly_eng.lower() or "fruit borer" in top["raw_label"].lower():
+                    raw_conf_fraction = top["confidence"] / 100.0
+                    if raw_conf_fraction < CLASS_THRESHOLDS["Fruit Borer"]:
+                        _save_to_shadow_dataset(source, top["raw_label"], top["confidence"])
+                        return {
+                            "success": False,
+                            "error": "Field Advisory: Possible fruit borer pattern detected but below confidence threshold. Please inspect your crop manually or upload a clearer close-up.",
+                            "message": "Field Advisory: Possible fruit borer pattern detected but below confidence threshold. Please inspect your crop manually or upload a clearer close-up.",
+                            "phase": 3,
+                            "low_confidence": True
+                        }
+
                 if top["confidence"] >= (PHASE1_MIN_CONF * 100):
                     if top["raw_label"] not in CLASS_NAMES:
                         return {
@@ -382,12 +440,23 @@ def _detect_source(source):
                         }
                     custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(top["raw_label"])
                     if custom_thresh is None:
-                        friendly_eng, _, _ = _get_friendly_name(top["raw_label"])
                         custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(friendly_eng)
                     
                     is_low = top["confidence"] < CONFIDENCE_THRESHOLD
                     if custom_thresh is not None and top["confidence"] < custom_thresh:
                          is_low = True
+
+                    # Also check CLASS_THRESHOLDS mapping for low confidence setting
+                    class_thresh_val = None
+                    if "fruit borer" in friendly_eng.lower() or "fruit borer" in top["raw_label"].lower():
+                        class_thresh_val = CLASS_THRESHOLDS["Fruit Borer"] * 100.0
+                    elif "armyworm" in friendly_eng.lower() or "armyworm" in top["raw_label"].lower():
+                        class_thresh_val = CLASS_THRESHOLDS["Armyworm"] * 100.0
+                    elif "aphid" in friendly_eng.lower() or "aphid" in top["raw_label"].lower():
+                        class_thresh_val = CLASS_THRESHOLDS["Aphids"] * 100.0
+                    
+                    if class_thresh_val is not None and top["confidence"] < class_thresh_val:
+                        is_low = True
 
                     phase1_result = {
                         "success":        True,
@@ -446,6 +515,24 @@ def _detect_source(source):
                 detections.sort(key=lambda x: x["confidence"], reverse=True)
                 top = detections[0]
 
+                mapped_raw = top["raw_label"]
+                if top["raw_label"] in IP102_CLASS_MAPPING:
+                    mapped_raw = IP102_CLASS_MAPPING[top["raw_label"]][0]
+                friendly_eng, _, _ = _get_friendly_name(mapped_raw)
+
+                # Intercept false fruit borer predictions
+                if "fruit borer" in friendly_eng.lower() or "fruit borer" in mapped_raw.lower() or "fruit borer" in top["raw_label"].lower():
+                    raw_conf_fraction = top["confidence"] / 100.0
+                    if raw_conf_fraction < CLASS_THRESHOLDS["Fruit Borer"]:
+                        _save_to_shadow_dataset(source, top["raw_label"], top["confidence"])
+                        return {
+                            "success": False,
+                            "error": "Field Advisory: Possible fruit borer pattern detected but below confidence threshold. Please inspect your crop manually or upload a clearer close-up.",
+                            "message": "Field Advisory: Possible fruit borer pattern detected but below confidence threshold. Please inspect your crop manually or upload a clearer close-up.",
+                            "phase": 3,
+                            "low_confidence": True
+                        }
+
                 if top["confidence"] >= 30:
                     if top["raw_label"] not in IP102_CLASS_MAPPING:
                         return {
@@ -455,17 +542,25 @@ def _detect_source(source):
                             "phase":   3,
                             "low_confidence": True,
                         }
-                    mapped_raw = top["raw_label"]
-                    if top["raw_label"] in IP102_CLASS_MAPPING:
-                        mapped_raw = IP102_CLASS_MAPPING[top["raw_label"]][0]
                     
-                    friendly_eng, _, _ = _get_friendly_name(mapped_raw)
                     custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(mapped_raw)
                     if custom_thresh is None:
                         custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(friendly_eng)
 
                     is_low = top["confidence"] < CONFIDENCE_THRESHOLD
                     if custom_thresh is not None and top["confidence"] < custom_thresh:
+                        is_low = True
+
+                    # Also check CLASS_THRESHOLDS mapping for low confidence setting
+                    class_thresh_val = None
+                    if "fruit borer" in friendly_eng.lower() or "fruit borer" in mapped_raw.lower() or "fruit borer" in top["raw_label"].lower():
+                        class_thresh_val = CLASS_THRESHOLDS["Fruit Borer"] * 100.0
+                    elif "armyworm" in friendly_eng.lower() or "armyworm" in mapped_raw.lower() or "armyworm" in top["raw_label"].lower():
+                        class_thresh_val = CLASS_THRESHOLDS["Armyworm"] * 100.0
+                    elif "aphid" in friendly_eng.lower() or "aphid" in mapped_raw.lower() or "aphid" in top["raw_label"].lower():
+                        class_thresh_val = CLASS_THRESHOLDS["Aphids"] * 100.0
+                    
+                    if class_thresh_val is not None and top["confidence"] < class_thresh_val:
                         is_low = True
 
                     phase2_result = {

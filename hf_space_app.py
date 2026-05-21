@@ -68,6 +68,12 @@ CLASS_SPECIFIC_THRESHOLDS = {
     "Fruit Borer": 75.0,
     "Pest-Helicoverpa armigera (Fruit Borer)": 75.0,
 }
+
+CLASS_THRESHOLDS = {
+    "Fruit Borer": 0.85,      # High mathematical bar to filter out false worm/aphid patterns
+    "Armyworm": 0.50,         # Standard threshold for surface caterpillars
+    "Aphids": 0.45
+}
 CONF_PRED = float(MODEL_INFO.get("confidence_threshold", 0.25))
 IMGSZ = int(MODEL_INFO.get("imgsz", 640))
 
@@ -167,6 +173,18 @@ def predict(image: Image.Image | None):
     class_id = int(boxes.cls[best_idx])
     _, label, raw_label = resolve_detection_class(class_id)
 
+    # Intercept false fruit borer predictions
+    if "fruit borer" in label.lower() or "fruit borer" in raw_label.lower():
+        raw_conf_fraction = confidence_pct / 100.0
+        if raw_conf_fraction < CLASS_THRESHOLDS["Fruit Borer"]:
+            return {
+                "success": False,
+                "error": "Field Advisory: Possible fruit borer pattern detected but below confidence threshold. Please inspect your crop manually or upload a clearer close-up.",
+                "message": "Field Advisory: Possible fruit borer pattern detected but below confidence threshold. Please inspect your crop manually or upload a clearer close-up.",
+                "phase": 3,
+                "low_confidence": True
+            }
+
     if len(boxes) > 1:
         sorted_confs = boxes.conf.sort(descending=True).values
         margin = float(sorted_confs[0] - sorted_confs[1])
@@ -178,6 +196,18 @@ def predict(image: Image.Image | None):
     if custom_thresh is None:
         custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(raw_label)
     if custom_thresh is not None and confidence_pct < custom_thresh:
+        is_low = True
+
+    # Also check CLASS_THRESHOLDS mapping for low confidence setting
+    class_thresh_val = None
+    if "fruit borer" in label.lower() or "fruit borer" in raw_label.lower():
+        class_thresh_val = CLASS_THRESHOLDS["Fruit Borer"] * 100.0
+    elif "armyworm" in label.lower() or "armyworm" in raw_label.lower():
+        class_thresh_val = CLASS_THRESHOLDS["Armyworm"] * 100.0
+    elif "aphid" in label.lower() or "aphid" in raw_label.lower():
+        class_thresh_val = CLASS_THRESHOLDS["Aphids"] * 100.0
+    
+    if class_thresh_val is not None and confidence_pct < class_thresh_val:
         is_low = True
 
     all_detections = []

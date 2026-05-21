@@ -403,13 +403,13 @@ def _detect_inner():
             log.info("local_cascade_start")
             _t_local = time.time()
             try:
-                # detect_from_memory() decodes in RAM (numpy/cv2) — no temp file.
-                # It carries its own safe fallback to detect() if decoding fails.
                 result = detector.detect_from_memory(image_bytes)
                 log.info("local_cascade_ok", extra={"data": {
                     "duration_ms": round((time.time() - _t_local) * 1000),
                     "phase":       result.get("phase") if isinstance(result, dict) else None,
                 }})
+                if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
+                    return jsonify(result)
             except Exception as local_exc:
                 log.error("local_cascade_error", extra={"data": {
                     "error_message": str(local_exc),
