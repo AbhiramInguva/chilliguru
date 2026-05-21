@@ -1,5 +1,8 @@
 # Model weights (use upload_to_hf.py instead)
 *.pt
+!chilli_pest_model.pt
+!ip102_model.pt
+!yolov8n.pt
 *.onnx
 *.engine
 
