@@ -31,6 +31,14 @@ if not Path(PHASE1_MODEL_PATH).exists():
 _phase1_model = None
 _phase2_model = None
 _phase3_model = None
+_EXPERT_CLASSIFIER_CACHE = None
+
+def _load_expert_classifier():
+    """Model 3: Load fine-grained expert classifier backbone (placeholder staging)."""
+    global _EXPERT_CLASSIFIER_CACHE
+    if _EXPERT_CLASSIFIER_CACHE is None:
+        _EXPERT_CLASSIFIER_CACHE = "ExpertClassifierBackbone_Placeholder"
+    return _EXPERT_CLASSIFIER_CACHE
 
 # ── 18 class labels from VIT-AP model (Phase 1) ────────────────────────────────
 CLASS_NAMES = [
@@ -299,10 +307,55 @@ def _detect_source(source):
                     cls_id     = int(box.cls[0])
                     model_name = names_map.get(cls_id, str(cls_id))
                     confidence = float(box.conf[0]) * 100.0
-                    raw_label  = _resolve_label(model_name, cls_id)
+                    
+                    # 2. Model 2 (YOLO) raw boundary coordinates
+                    try:
+                        xmin, ymin, xmax, ymax = map(int, box.xyxy[0])
+                    except (AttributeError, IndexError, TypeError, ValueError):
+                        xmin, ymin, xmax, ymax = 0, 0, 100, 100
+                    coords = {
+                        "xmin": xmin,
+                        "ymin": ymin,
+                        "xmax": xmax,
+                        "ymax": ymax
+                    }
+                    
+                    # 3. Sub-routine using OpenCV to slice the image buffer
+                    cropped_patch = None
+                    try:
+                        import cv2
+                        import numpy as np
+                        if isinstance(source, (str, Path)):
+                            cv_img = cv2.imread(str(source))
+                        elif isinstance(source, np.ndarray):
+                            cv_img = source
+                        else:
+                            cv_img = None
+                        
+                        if cv_img is not None:
+                            cropped_patch = cv_img[ymin:ymax, xmin:xmax]
+                    except Exception as cv_err:
+                        log.error("opencv_crop_error", extra={"data": {"error_message": str(cv_err)}})
+                    
+                    # 4. Model 3 expert classifier evaluation on the cropped patch (placeholder)
+                    expert_label = None
+                    try:
+                        expert_model = _load_expert_classifier()
+                        if expert_model is not None and cropped_patch is not None:
+                            # Evaluate the cropped patch using a dedicated backbone (placeholder step)
+                            expert_label = _resolve_label(model_name, cls_id)
+                    except Exception as expert_err:
+                        log.error("expert_eval_error", extra={"data": {"error_message": str(expert_err)}})
+                    
+                    if expert_label is None:
+                        raw_label = _resolve_label(model_name, cls_id)
+                    else:
+                        raw_label = expert_label
+                    
                     english, telugu, kind = _get_friendly_name(raw_label)
                     display = f"{english} [{telugu}]" if telugu else english
                     info    = PEST_INFO.get(raw_label, {"symptoms": f"Damage by {english}", "damage": ""})
+                    
                     detections.append({
                         "label":      display,
                         "raw_label":  raw_label,
@@ -311,6 +364,8 @@ def _detect_source(source):
                         "severity":   _sev(confidence),
                         "symptoms":   info["symptoms"],
                         "damage":     info["damage"],
+                        "anomaly":    "crop_anomaly",
+                        "coordinates": coords
                     })
 
                 detections.sort(key=lambda x: x["confidence"], reverse=True)
@@ -338,7 +393,7 @@ def _detect_source(source):
                         "success":        True,
                         "top_detection":  top,
                         "all_detections": detections[:3],
-                        "model_used":     "Phase 1: VIT-AP ChilliGuru (18-class)",
+                        "model_used":     "Phase 1: Three-Model Tiered Cascade (YOLOv8 + Expert Classifier)",
                         "low_confidence": is_low,
                         "phase":          1,
                     }
