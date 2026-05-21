@@ -8,7 +8,7 @@ import threading
 import time
 import traceback
 import uuid
-from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
+from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context, g, has_request_context
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -16,24 +16,71 @@ from gradio_client import Client, handle_file
 from groq import Groq
 import detector
 
+class SchemaValidationError(Exception):
+    pass
+
 # ── Structured JSON logger ────────────────────────────────────────────────────
-class _JsonFormatter(logging.Formatter):
+class StructuredJsonFormatter(logging.Formatter):
     def format(self, record):
-        payload = {
-            "ts":    self.formatTime(record, "%Y-%m-%dT%H:%M:%SZ"),
-            "level": record.levelname,
-            "event": record.getMessage(),
-        }
+        # Format timestamp matching standard asctime format
+        if not hasattr(record, 'asctime'):
+            record.asctime = self.formatTime(record, self.datefmt)
+        timestamp = record.asctime
+
+        # Get request_id
+        request_id = "system"
+        if has_request_context():
+            request_id = g.get("request_id", "system")
+        elif hasattr(record, "request_id"):
+            request_id = record.request_id
+
+        # Determine status
+        status = "error" if record.levelno >= logging.ERROR else "success"
+
+        # Determine event name
+        event_name = record.getMessage()
+
+        # Build metrics dict
+        metrics = {}
+        if has_request_context() and hasattr(g, "performance") and isinstance(g.performance, dict):
+            metrics.update(g.performance)
+
         if hasattr(record, "data") and isinstance(record.data, dict):
-            payload.update(record.data)
+            for k, v in record.data.items():
+                if k == "metrics" and isinstance(v, dict):
+                    metrics.update(v)
+                elif k != "event":
+                    metrics[k] = v
+
+        payload = {
+            "timestamp": timestamp,
+            "request_id": request_id,
+            "event": event_name,
+            "metrics": metrics,
+            "status": status
+        }
+
         if record.exc_info:
             payload["traceback"] = self.formatException(record.exc_info)
+
         return json.dumps(payload, ensure_ascii=False)
 
+# Configure logging on the root logger and remove all existing handlers
+for _h in logging.root.handlers[:]:
+    logging.root.removeHandler(_h)
+
 _handler = logging.StreamHandler(sys.stdout)
-_handler.setFormatter(_JsonFormatter())
+_handler.setFormatter(StructuredJsonFormatter())
+logging.root.addHandler(_handler)
 logging.root.setLevel(logging.INFO)
-logging.root.handlers = [_handler]
+
+# Force propagation and clean handlers from common loggers
+for logger_name in ["werkzeug", "flask", "gunicorn", "gunicorn.error", "gunicorn.access", "chilliguru"]:
+    _l = logging.getLogger(logger_name)
+    _l.propagate = True
+    for _h in _l.handlers[:]:
+        _l.removeHandler(_h)
+
 log = logging.getLogger("chilliguru")
 
 MODEL          = "llama-3.3-70b-versatile"
@@ -149,6 +196,7 @@ def call_hf_detector(image_bytes):
 
     tmp_path = None
     _t_hf = time.time()
+    t_start = time.perf_counter()
     try:
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             tmp.write(image_bytes)
@@ -156,6 +204,9 @@ def call_hf_detector(image_bytes):
 
         log.info("hf_call_start")
         result = client.predict(handle_file(tmp_path), api_name="/predict")
+        duration_us = int((time.perf_counter() - t_start) * 1_000_000)
+        if has_request_context() and hasattr(g, "performance"):
+            g.performance["hf_api_call"] = duration_us
         hf_ms = round((time.time() - _t_hf) * 1000)
         _cb_record_success()
         log.info("hf_call_ok", extra={"data": {"duration_ms": hf_ms, "phase": "hf"}})
@@ -197,6 +248,9 @@ def call_hf_detector(image_bytes):
             return parsed_result
         return {"result": str(parsed_result)}
     except Exception as exc:
+        duration_us = int((time.perf_counter() - t_start) * 1_000_000)
+        if has_request_context() and hasattr(g, "performance"):
+            g.performance["hf_api_call"] = duration_us
         log.error("hf_call_error", extra={"data": {
             "error_message": str(exc),
             "duration_ms":   round((time.time() - _t_hf) * 1000),
@@ -229,6 +283,7 @@ def _groq_stream_generator(messages, detection, is_low):
 
     # ── Frames 1-N: Groq token stream ─────────────────────────────────────────
     _t = time.time()
+    t_start = time.perf_counter()
     try:
         response = get_client().chat.completions.create(
             model=MODEL,
@@ -243,12 +298,19 @@ def _groq_stream_generator(messages, detection, is_low):
                 payload = {"type": "text", "text": delta}
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+        duration_us = int((time.perf_counter() - t_start) * 1_000_000)
+        if has_request_context() and hasattr(g, "performance"):
+            g.performance["llm_generation_time"] = duration_us
+
         log.info("groq_stream_done", extra={"data": {
             "duration_ms": round((time.time() - _t) * 1000),
         }})
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     except Exception as exc:
+        duration_us = int((time.perf_counter() - t_start) * 1_000_000)
+        if has_request_context() and hasattr(g, "performance"):
+            g.performance["llm_generation_time"] = duration_us
         log.error("groq_stream_error", extra={"data": {"error_message": str(exc)}},
                   exc_info=True)
         yield f"data: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
@@ -362,6 +424,13 @@ def chat():
 @app.route("/detect", methods=["POST"])
 @limiter.limit("5 per minute")
 def detect():
+    import uuid
+    g.request_id = f"req-{uuid.uuid4().hex[:8]}"
+    g.performance = {
+        "hf_api_call": 0,
+        "local_inference_processing": 0,
+        "llm_generation_time": 0
+    }
     _t0 = time.time()
     try:
         try:
@@ -435,54 +504,85 @@ def _detect_inner():
                 if get_hf_client() is not None:
                     result = call_hf_detector(image_bytes)
                     
-                    # 1. Gatekeeper strip wrappers
-                    response_data = None
-                    if isinstance(result, dict):
-                        if "error" in result:
-                            response_data = result["error"]
-                        elif "label" in result:
-                            response_data = result["label"]
-                        elif "top_detection" in result and result["top_detection"]:
-                            if isinstance(result["top_detection"], dict):
-                                response_data = result["top_detection"].get("label")
-                            else:
-                                response_data = result["top_detection"]
-                    elif isinstance(result, (list, tuple)) and len(result) > 0:
-                        response_data = result[0]
-                    else:
-                        response_data = result
-
-                    label = str(response_data).strip().lower() if response_data is not None else ""
-                    
-                    # Check confidence score returned by the guardrail
-                    conf_val = None
-                    if isinstance(result, dict):
-                        if "confidence" in result:
-                            conf_val = result["confidence"]
-                        elif "top_detection" in result and isinstance(result["top_detection"], dict):
-                            conf_val = result["top_detection"].get("confidence")
-
                     try:
-                        conf = float(conf_val) if conf_val is not None else 0.0
-                    except Exception:
-                        conf = None
-
-                    # Hotfix Gasket to handle the new endpoint structure
-                    is_hotfix_triggered = False
-                    if label == "non_chilli" and conf == 0:
-                        is_hotfix_triggered = True
-                    elif conf is None:
-                        is_hotfix_triggered = True
-
-                    if is_hotfix_triggered:
-                        # Hotfix Gasket to handle the new endpoint structure
-                        if label == "non_chilli" and conf == 0:
-                            label = "chilli"
-                            conf = 1.0
-                            is_low_confidence = False
+                        if not isinstance(result, dict):
+                            raise SchemaValidationError("Response is not a dictionary")
                         
-                        # Set to run local cascade with OOD check bypassed
-                        force_bypass_ood = True
+                        if "success" not in result:
+                            raise SchemaValidationError("Missing 'success' key in response")
+                        if not isinstance(result["success"], bool):
+                            raise SchemaValidationError("Invalid 'success' data type, expected boolean")
+                        
+                        if result["success"]:
+                            # Expected layout contract for successful prediction
+                            if "top_detection" not in result:
+                                raise SchemaValidationError("Missing 'top_detection' key")
+                            if "all_detections" not in result:
+                                raise SchemaValidationError("Missing 'all_detections' key")
+                            
+                            top_det = result["top_detection"]
+                            if top_det is not None:
+                                if not isinstance(top_det, dict):
+                                    raise SchemaValidationError("'top_detection' must be a dictionary or None")
+                                
+                                for key in ["label", "confidence", "type", "raw_label"]:
+                                    if key not in top_det:
+                                        raise SchemaValidationError(f"Missing '{key}' in 'top_detection'")
+                                
+                                if not isinstance(top_det["label"], str):
+                                    raise SchemaValidationError("'label' in 'top_detection' must be a string")
+                                if not isinstance(top_det["type"], str):
+                                    raise SchemaValidationError("'type' in 'top_detection' must be a string")
+                                if not isinstance(top_det["raw_label"], str):
+                                    raise SchemaValidationError("'raw_label' in 'top_detection' must be a string")
+                                
+                                try:
+                                    conf_val = float(top_det["confidence"])
+                                except (ValueError, TypeError):
+                                    raise SchemaValidationError("Invalid 'confidence' format in 'top_detection'")
+                            
+                            if not isinstance(result["all_detections"], list):
+                                raise SchemaValidationError("'all_detections' must be a list")
+                            
+                            for idx, det in enumerate(result["all_detections"]):
+                                if not isinstance(det, dict):
+                                    raise SchemaValidationError(f"Detection at index {idx} in 'all_detections' must be a dictionary")
+                                for key in ["label", "confidence", "type", "raw_label"]:
+                                    if key not in det:
+                                        raise SchemaValidationError(f"Missing '{key}' in detection at index {idx}")
+                                if not isinstance(det["label"], str):
+                                    raise SchemaValidationError(f"'label' in detection at index {idx} must be a string")
+                                if not isinstance(det["type"], str):
+                                    raise SchemaValidationError(f"'type' in detection at index {idx} must be a string")
+                                if not isinstance(det["raw_label"], str):
+                                    raise SchemaValidationError(f"'raw_label' in detection at index {idx} must be a string")
+                                try:
+                                    float(det["confidence"])
+                                except (ValueError, TypeError):
+                                    raise SchemaValidationError(f"Invalid 'confidence' in detection at index {idx}")
+                            
+                            for k in ["low_confidence", "is_low_confidence"]:
+                                if k in result and not isinstance(result[k], bool):
+                                    raise SchemaValidationError(f"Invalid '{k}' data type, expected boolean")
+                                    
+                            if top_det is not None:
+                                label = top_det["label"].strip().lower()
+                                conf = float(top_det["confidence"])
+                            else:
+                                label = ""
+                                conf = 0.0
+                        else:
+                            # Response returned success=False (an error or guardrail rejection)
+                            if "error" not in result or not isinstance(result["error"], str):
+                                raise SchemaValidationError("Missing or invalid 'error' string in failed response")
+                            label = ""
+                            conf = 0.0
+                            
+                    except SchemaValidationError as sve:
+                        log.warning("schema_validation_failed_fallback", extra={"data": {
+                            "error_message": str(sve),
+                            "raw_response": str(result)
+                        }})
                         result = None
                     
                     if result is not None:
@@ -519,19 +619,26 @@ def _detect_inner():
 
         if result is None:
             log.info("local_cascade_start")
-            _t_local = time.time()
+            t_local_start = time.perf_counter()
             try:
                 result = detector.detect_from_memory(image_bytes, bypass_ood=force_bypass_ood)
+                duration_us = int((time.perf_counter() - t_local_start) * 1_000_000)
+                if has_request_context() and hasattr(g, "performance"):
+                    g.performance["local_inference_processing"] = duration_us
+                
                 log.info("local_cascade_ok", extra={"data": {
-                    "duration_ms": round((time.time() - _t_local) * 1000),
+                    "duration_ms": round(duration_us / 1000.0),
                     "phase":       result.get("phase") if isinstance(result, dict) else None,
                 }})
                 if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
                     return jsonify(result)
             except Exception as local_exc:
+                duration_us = int((time.perf_counter() - t_local_start) * 1_000_000)
+                if has_request_context() and hasattr(g, "performance"):
+                    g.performance["local_inference_processing"] = duration_us
                 log.error("local_cascade_error", extra={"data": {
                     "error_message": str(local_exc),
-                    "duration_ms":   round((time.time() - _t_local) * 1000),
+                    "duration_ms":   round(duration_us / 1000.0),
                 }}, exc_info=True)
                 result = {"error": str(local_exc)}
 
