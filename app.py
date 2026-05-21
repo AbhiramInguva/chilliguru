@@ -413,8 +413,45 @@ def _detect_inner():
             try:
                 if hf_client is not None:
                     result = call_hf_detector(image_bytes)
-                    # Intentional guardrail rejection — return immediately, don't fall back
+                    
+                    # 1. Gatekeeper strip wrappers
+                    response_data = None
+                    if isinstance(result, dict):
+                        if "error" in result:
+                            response_data = result["error"]
+                        elif "label" in result:
+                            response_data = result["label"]
+                        elif "top_detection" in result and result["top_detection"]:
+                            if isinstance(result["top_detection"], dict):
+                                response_data = result["top_detection"].get("label")
+                            else:
+                                response_data = result["top_detection"]
+                    elif isinstance(result, (list, tuple)) and len(result) > 0:
+                        response_data = result[0]
+                    else:
+                        response_data = result
+
+                    gatekeeper_label = str(response_data).strip().lower() if response_data is not None else ""
+                    
+                    # Check confidence score returned by the guardrail
+                    conf_val = None
+                    if isinstance(result, dict):
+                        if "confidence" in result:
+                            conf_val = result["confidence"]
+                        elif "top_detection" in result and isinstance(result["top_detection"], dict):
+                            conf_val = result["top_detection"].get("confidence")
+
+                    is_zero_confidence = (conf_val == 0 or conf_val == 0.0)
+                    
+                    # Determine if it indicates a non-chilli rejection
+                    is_guardrail_rejection = False
+                    if "non_chilli" in gatekeeper_label or gatekeeper_label == "0":
+                        is_guardrail_rejection = True
                     if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
+                        is_guardrail_rejection = True
+
+                    # 2. Temporary bypass logic gasket: if confidence is explicitly 0 or 0.0, let it bypass the short-circuit
+                    if is_guardrail_rejection and not is_zero_confidence:
                         # Data flywheel: non-chilli guardrail image → shadow dataset
                         _trigger_shadow_save(
                             image_bytes,
@@ -423,6 +460,10 @@ def _detect_inner():
                             trigger="phase3",
                         )
                         return jsonify(result)
+                    
+                    if is_guardrail_rejection and is_zero_confidence:
+                        log.info("guardrail_zero_confidence_bypass_gasket")
+                        result = None
                     if result and "error" in result:
                         log.warning("hf_result_error_fallback", extra={"data": {
                             "error_message": result["error"],
