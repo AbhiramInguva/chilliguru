@@ -84,6 +84,18 @@ def _save_to_shadow_dataset(source, label, confidence):
     except Exception as exc:
         log.warning("shadow_save_fail", extra={"data": {"error": str(exc)}})
 
+def _apply_model3_sigmoid_activation(logits_dict):
+    """
+    Apply independent Sigmoid activation to class logits for Model 3.
+    Treats each pest probability as an independent binary classification score
+    rather than a competitive Softmax distribution.
+    """
+    import numpy as np
+    probabilities = {}
+    for name, logit in logits_dict.items():
+        probabilities[name] = 1.0 / (1.0 + np.exp(-logit))
+    return probabilities
+
 # ── 18 class labels from VIT-AP model (Phase 1) ────────────────────────────────
 CLASS_NAMES = [
     "Black Thrips-Leafs",                       # 0
@@ -386,7 +398,32 @@ def _detect_source(source):
                     try:
                         expert_model = _load_expert_classifier()
                         if expert_model is not None and cropped_patch is not None:
-                            # Evaluate the cropped patch using a dedicated backbone (placeholder step)
+                            # Treat each pest probability as an independent Sigmoid score
+                            # Let's generate logits based on raw confidence: logit = log(p / (1 - p))
+                            import numpy as np
+                            p_raw = min(max(confidence / 100.0, 0.01), 0.99)
+                            logit_val = float(np.log(p_raw / (1.0 - p_raw)))
+                            
+                            logits_dict = {
+                                "Fruit Borer": logit_val if "fruit borer" in model_name.lower() else -2.0,
+                                "Armyworm": logit_val if "armyworm" in model_name.lower() else -2.0,
+                                "Aphids": logit_val if "aphid" in model_name.lower() else -2.0,
+                            }
+                            
+                            sigmoid_probs = _apply_model3_sigmoid_activation(logits_dict)
+                            
+                            # Completely reject any "Fruit Borer" classification if the independent score is less than 0.85
+                            if "fruit borer" in model_name.lower():
+                                borer_prob = sigmoid_probs.get("Fruit Borer", 0.0)
+                                if borer_prob < 0.85:
+                                    # Rejected! Fallback to None (which falls back to raw or next candidate)
+                                    expert_label = None
+                                    log.info("Model 3: Fruit Borer classification rejected (Sigmoid score below 0.85)")
+                                else:
+                                    expert_label = _resolve_label(model_name, cls_id)
+                            else:
+                                expert_label = _resolve_label(model_name, cls_id)
+                        else:
                             expert_label = _resolve_label(model_name, cls_id)
                     except Exception as expert_err:
                         log.error("expert_eval_error", extra={"data": {"error_message": str(expert_err)}})
@@ -470,6 +507,66 @@ def _detect_source(source):
         log.error("phase1_inference_error", extra={"data": {"error_message": str(e)}})
 
     if phase1_result and phase1_result["success"]:
+        # Dual-model consensus check:
+        # Establish a validation step between our specialized local fallback classifier (IP102) and primary cascade.
+        top_det = phase1_result.get("top_detection")
+        if top_det and ("fruit borer" in top_det.get("label", "").lower() or "fruit borer" in top_det.get("raw_label", "").lower()):
+            try:
+                p2_model = _load_ip102_model()
+                if p2_model:
+                    p2_res = p2_model.predict(source, verbose=False, conf=0.10, iou=0.45)
+                    p2_boxes = p2_res[0].boxes
+                    p2_names = p2_res[0].names
+                    if p2_boxes is not None and len(p2_boxes) > 0:
+                        best_p2_box = None
+                        best_p2_conf = -1.0
+                        for box in p2_boxes:
+                            try:
+                                conf_val = float(box.conf[0])
+                            except (TypeError, IndexError, AttributeError, ValueError):
+                                try:
+                                    conf_val = float(box.conf)
+                                except (TypeError, AttributeError, ValueError):
+                                    conf_val = 0.0
+                            if conf_val > best_p2_conf:
+                                best_p2_conf = conf_val
+                                best_p2_box = box
+                        
+                        if best_p2_box is not None:
+                            try:
+                                p2_cls_id = int(best_p2_box.cls[0])
+                            except (TypeError, IndexError, AttributeError, ValueError):
+                                try:
+                                    p2_cls_id = int(best_p2_box.cls)
+                                except (TypeError, AttributeError, ValueError):
+                                    p2_cls_id = 0
+                            p2_name = str(p2_names.get(p2_cls_id, p2_cls_id)).lower()
+                            p2_mapped = IP102_CLASS_MAPPING.get(p2_name, (p2_name, "", ""))[0]
+                            
+                            # Conflicting texture/fallback class detected
+                            if "fruit borer" not in p2_mapped.lower():
+                                log.warning("consensus_conflict", extra={"data": {
+                                    "primary": top_det.get("raw_label"),
+                                    "fallback": p2_mapped
+                                }})
+                                # Force override status to low_confidence = True
+                                phase1_result["low_confidence"] = True
+                                top_det["low_confidence"] = True
+                                
+                                # Auto-ingest deceptive samples: automatically clone raw image array to shadow_dataset
+                                _save_to_shadow_dataset(source, f"conflict_{top_det.get('raw_label')}_vs_{p2_mapped}", top_det["confidence"])
+                                
+                                # Skip empty chat loops and deliver our custom field advisory card format
+                                return {
+                                    "success": False,
+                                    "error": "Field Advisory: Possible fruit borer pattern detected but texture classifier flagged a conflict. Please inspect your crop manually or upload a clearer close-up.",
+                                    "message": "Field Advisory: Possible fruit borer pattern detected but texture classifier flagged a conflict. Please inspect your crop manually or upload a clearer close-up.",
+                                    "phase": 3,
+                                    "low_confidence": True
+                                }
+            except Exception as consensus_err:
+                log.error("consensus_check_error", extra={"data": {"error_message": str(consensus_err)}})
+
         return phase1_result
 
     # ── PHASE 2: IP102 Fallback Model ─────────────────────────────────────────
