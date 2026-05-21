@@ -147,7 +147,43 @@ def call_hf_detector(image_bytes):
         hf_ms = round((time.time() - _t_hf) * 1000)
         _cb_record_success()
         log.info("hf_call_ok", extra={"data": {"duration_ms": hf_ms, "phase": "hf"}})
-        return result if isinstance(result, dict) else {"result": str(result)}
+        
+        # Robustly decode and unwrap result
+        parsed_result = result
+        if isinstance(result, str):
+            try:
+                import json
+                parsed_result = json.loads(result)
+            except Exception:
+                pass
+
+        if isinstance(parsed_result, list) and len(parsed_result) > 0:
+            parsed_result = parsed_result[0]
+
+        if isinstance(parsed_result, dict):
+            # Extract nested data if present
+            if "data" in parsed_result:
+                inner_data = parsed_result["data"]
+                if isinstance(inner_data, (dict, list)):
+                    parsed_result = inner_data
+                    if isinstance(parsed_result, list) and len(parsed_result) > 0:
+                        parsed_result = parsed_result[0]
+
+        # Extract core detection labels or target values directly if wrapped
+        if isinstance(parsed_result, dict) and "top_detection" not in parsed_result:
+            if "label" in parsed_result:
+                parsed_result = {
+                    "success": parsed_result.get("success", True),
+                    "low_confidence": parsed_result.get("low_confidence", False),
+                    "is_low_confidence": parsed_result.get("is_low_confidence", False),
+                    "phase": parsed_result.get("phase", 1),
+                    "top_detection": parsed_result,
+                    "all_detections": [parsed_result]
+                }
+
+        if isinstance(parsed_result, dict):
+            return parsed_result
+        return {"result": str(parsed_result)}
     except Exception as exc:
         log.error("hf_call_error", extra={"data": {
             "error_message": str(exc),
