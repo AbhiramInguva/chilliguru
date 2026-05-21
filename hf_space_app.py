@@ -132,7 +132,8 @@ def predict(image: Image.Image | None):
                     "success": False,
                     "error": "Please upload chili plant images",
                     "phase": 3,
-                    "low_confidence": True
+                    "low_confidence": True,
+                    "is_low_confidence": True
                 }
 
             # Check if the detected object classes are purely non-agricultural
@@ -150,7 +151,8 @@ def predict(image: Image.Image | None):
                     "success": False,
                     "error": "Please upload chili plant images",
                     "phase": 3,
-                    "low_confidence": True
+                    "low_confidence": True,
+                    "is_low_confidence": True
                 }
     except Exception as e:
         print(f"   [OOD Preprocessing] YOLOv8n check error: {e}", flush=True)
@@ -163,6 +165,7 @@ def predict(image: Image.Image | None):
         return {
             "success": True,
             "low_confidence": True,
+            "is_low_confidence": True,
             "top_detection": None,
             "all_detections": [],
             "message": "No pest or disease detected above threshold. Try a clearer close-up.",
@@ -182,7 +185,8 @@ def predict(image: Image.Image | None):
                 "error": "Field Advisory: Possible fruit borer pattern detected but below confidence threshold. Please inspect your crop manually or upload a clearer close-up.",
                 "message": "Field Advisory: Possible fruit borer pattern detected but below confidence threshold. Please inspect your crop manually or upload a clearer close-up.",
                 "phase": 3,
-                "low_confidence": True
+                "low_confidence": True,
+                "is_low_confidence": True
             }
 
     if len(boxes) > 1:
@@ -236,6 +240,7 @@ def predict(image: Image.Image | None):
     return {
         "success": True,
         "low_confidence": is_low,
+        "is_low_confidence": is_low,
         "top_detection": top,
         "all_detections": all_detections,
         "model_classes_baked": NUM_BAKED,

@@ -463,7 +463,8 @@ def _detect_source(source):
                             "error": "Field Advisory: Possible fruit borer pattern detected but below confidence threshold. Please inspect your crop manually or upload a clearer close-up.",
                             "message": "Field Advisory: Possible fruit borer pattern detected but below confidence threshold. Please inspect your crop manually or upload a clearer close-up.",
                             "phase": 3,
-                            "low_confidence": True
+                            "low_confidence": True,
+                            "is_low_confidence": True
                         }
 
                 if top["confidence"] >= (PHASE1_MIN_CONF * 100):
@@ -474,6 +475,7 @@ def _detect_source(source):
                             "message": "Please upload chili plant images",
                             "phase":   3,
                             "low_confidence": True,
+                            "is_low_confidence": True,
                         }
                     custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(top["raw_label"])
                     if custom_thresh is None:
@@ -501,6 +503,7 @@ def _detect_source(source):
                         "all_detections": detections[:3],
                         "model_used":     "Phase 1: Three-Model Tiered Cascade (YOLOv8 + Expert Classifier)",
                         "low_confidence": is_low,
+                        "is_low_confidence": is_low,
                         "phase":          1,
                     }
     except Exception as e:
@@ -551,7 +554,9 @@ def _detect_source(source):
                                 }})
                                 # Force override status to low_confidence = True
                                 phase1_result["low_confidence"] = True
+                                phase1_result["is_low_confidence"] = True
                                 top_det["low_confidence"] = True
+                                top_det["is_low_confidence"] = True
                                 
                                 # Auto-ingest deceptive samples: automatically clone raw image array to shadow_dataset
                                 _save_to_shadow_dataset(source, f"conflict_{top_det.get('raw_label')}_vs_{p2_mapped}", top_det["confidence"])
@@ -562,7 +567,8 @@ def _detect_source(source):
                                     "error": "Field Advisory: Possible fruit borer pattern detected but texture classifier flagged a conflict. Please inspect your crop manually or upload a clearer close-up.",
                                     "message": "Field Advisory: Possible fruit borer pattern detected but texture classifier flagged a conflict. Please inspect your crop manually or upload a clearer close-up.",
                                     "phase": 3,
-                                    "low_confidence": True
+                                    "low_confidence": True,
+                                    "is_low_confidence": True
                                 }
             except Exception as consensus_err:
                 log.error("consensus_check_error", extra={"data": {"error_message": str(consensus_err)}})
@@ -627,7 +633,8 @@ def _detect_source(source):
                             "error": "Field Advisory: Possible fruit borer pattern detected but below confidence threshold. Please inspect your crop manually or upload a clearer close-up.",
                             "message": "Field Advisory: Possible fruit borer pattern detected but below confidence threshold. Please inspect your crop manually or upload a clearer close-up.",
                             "phase": 3,
-                            "low_confidence": True
+                            "low_confidence": True,
+                            "is_low_confidence": True
                         }
 
                 if top["confidence"] >= 30:
@@ -638,6 +645,7 @@ def _detect_source(source):
                             "message": "Please upload chili plant images",
                             "phase":   3,
                             "low_confidence": True,
+                            "is_low_confidence": True,
                         }
                     
                     custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(mapped_raw)
@@ -666,6 +674,7 @@ def _detect_source(source):
                         "all_detections": detections[:3],
                         "model_used":     "Phase 2: IP102 Generic Pest Detector (5-class)",
                         "low_confidence": is_low,
+                        "is_low_confidence": is_low,
                         "phase":          2,
                     }
     except Exception as e:
@@ -698,6 +707,7 @@ def _detect_source(source):
                     "error":            "Please upload chili plant images",
                     "message":          "Please upload chili plant images",
                     "low_confidence":   True,
+                    "is_low_confidence": True,
                     "phase":            3,
                     "detected_objects": non_agricultural_objects,
                     "model_used":       "Phase 3: YOLOv8n Generic Detector (Anomaly Check)",
@@ -714,6 +724,7 @@ def _detect_source(source):
         "error":          "Please upload chili plant images",
         "message":        "Please upload chili plant images",
         "low_confidence": True,
+        "is_low_confidence": True,
         "phase":          0,
     }
 
