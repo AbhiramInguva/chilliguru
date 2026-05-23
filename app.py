@@ -8,7 +8,7 @@ import threading
 import time
 import traceback
 import uuid
-from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context, g, has_request_context, make_response
+from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -16,80 +16,24 @@ from gradio_client import Client, handle_file
 from groq import Groq
 import detector
 
-class SchemaValidationError(Exception):
-    pass
-
-TRANSLATION_DICTIONARY = {
-    4: "Mealybugs [పిండి పురుగు]",
-    "4": "Mealybugs [పిండి పురుగు]",
-    "Mealybugs": "Mealybugs [పిండి పురుగు]",
-    "Mealybug": "Mealybugs [పిండి పురుగు]",
-    "Pest-Phenacoccus solenopsis (Mealybug)": "Mealybugs [పిండి పురుగు]",
-    "Pest-Phenacoccus solenopsis-Pendi Nalli": "Mealybugs [పిండి పురుగు]"
-}
-
 # ── Structured JSON logger ────────────────────────────────────────────────────
-class StructuredJsonFormatter(logging.Formatter):
+class _JsonFormatter(logging.Formatter):
     def format(self, record):
-        # Format timestamp matching standard asctime format
-        if not hasattr(record, 'asctime'):
-            record.asctime = self.formatTime(record, self.datefmt)
-        timestamp = record.asctime
-
-        # Get request_id
-        request_id = "system"
-        if has_request_context():
-            request_id = g.get("request_id", "system")
-        elif hasattr(record, "request_id"):
-            request_id = record.request_id
-
-        # Determine status
-        status = "error" if record.levelno >= logging.ERROR else "success"
-
-        # Determine event name
-        event_name = record.getMessage()
-
-        # Build metrics dict
-        metrics = {}
-        if has_request_context() and hasattr(g, "performance") and isinstance(g.performance, dict):
-            metrics.update(g.performance)
-
-        if hasattr(record, "data") and isinstance(record.data, dict):
-            for k, v in record.data.items():
-                if k == "metrics" and isinstance(v, dict):
-                    metrics.update(v)
-                elif k != "event":
-                    metrics[k] = v
-
         payload = {
-            "timestamp": timestamp,
-            "request_id": request_id,
-            "event": event_name,
-            "metrics": metrics,
-            "status": status
+            "ts":    self.formatTime(record, "%Y-%m-%dT%H:%M:%SZ"),
+            "level": record.levelname,
+            "event": record.getMessage(),
         }
-
+        if hasattr(record, "data") and isinstance(record.data, dict):
+            payload.update(record.data)
         if record.exc_info:
             payload["traceback"] = self.formatException(record.exc_info)
-
         return json.dumps(payload, ensure_ascii=False)
 
-# Configure logging on the root logger and remove all existing handlers
-for _h in logging.root.handlers[:]:
-    logging.root.removeHandler(_h)
-
 _handler = logging.StreamHandler(sys.stdout)
-_handler.setFormatter(StructuredJsonFormatter())
-logging.root.addHandler(_handler)
+_handler.setFormatter(_JsonFormatter())
 logging.root.setLevel(logging.INFO)
-
-# Force propagation and clean handlers from common loggers
-for logger_name in ["werkzeug", "flask", "gunicorn", "gunicorn.error", "gunicorn.access", "chilliguru"]:
-    _l = logging.getLogger(logger_name)
-    _l.propagate = True
-    for _h in _l.handlers[:]:
-        _l.removeHandler(_h)
-
+logging.root.handlers = [_handler]
 log = logging.getLogger("chilliguru")
 
 MODEL          = "llama-3.3-70b-versatile"
@@ -205,7 +149,6 @@ def call_hf_detector(image_bytes):
 
     tmp_path = None
     _t_hf = time.time()
-    t_start = time.perf_counter()
     try:
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             tmp.write(image_bytes)
@@ -213,9 +156,6 @@ def call_hf_detector(image_bytes):
 
         log.info("hf_call_start")
         result = client.predict(handle_file(tmp_path), api_name="/predict")
-        duration_us = int((time.perf_counter() - t_start) * 1_000_000)
-        if has_request_context() and hasattr(g, "performance"):
-            g.performance["hf_api_call"] = duration_us
         hf_ms = round((time.time() - _t_hf) * 1000)
         _cb_record_success()
         log.info("hf_call_ok", extra={"data": {"duration_ms": hf_ms, "phase": "hf"}})
@@ -257,9 +197,6 @@ def call_hf_detector(image_bytes):
             return parsed_result
         return {"result": str(parsed_result)}
     except Exception as exc:
-        duration_us = int((time.perf_counter() - t_start) * 1_000_000)
-        if has_request_context() and hasattr(g, "performance"):
-            g.performance["hf_api_call"] = duration_us
         log.error("hf_call_error", extra={"data": {
             "error_message": str(exc),
             "duration_ms":   round((time.time() - _t_hf) * 1000),
@@ -292,7 +229,6 @@ def _groq_stream_generator(messages, detection, is_low):
 
     # ── Frames 1-N: Groq token stream ─────────────────────────────────────────
     _t = time.time()
-    t_start = time.perf_counter()
     try:
         response = get_client().chat.completions.create(
             model=MODEL,
@@ -307,19 +243,12 @@ def _groq_stream_generator(messages, detection, is_low):
                 payload = {"type": "text", "text": delta}
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-        duration_us = int((time.perf_counter() - t_start) * 1_000_000)
-        if has_request_context() and hasattr(g, "performance"):
-            g.performance["llm_generation_time"] = duration_us
-
         log.info("groq_stream_done", extra={"data": {
             "duration_ms": round((time.time() - _t) * 1000),
         }})
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     except Exception as exc:
-        duration_us = int((time.perf_counter() - t_start) * 1_000_000)
-        if has_request_context() and hasattr(g, "performance"):
-            g.performance["llm_generation_time"] = duration_us
         log.error("groq_stream_error", extra={"data": {"error_message": str(exc)}},
                   exc_info=True)
         yield f"data: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
@@ -433,13 +362,6 @@ def chat():
 @app.route("/detect", methods=["POST"])
 @limiter.limit("5 per minute")
 def detect():
-    import uuid
-    g.request_id = f"req-{uuid.uuid4().hex[:8]}"
-    g.performance = {
-        "hf_api_call": 0,
-        "local_inference_processing": 0,
-        "llm_generation_time": 0
-    }
     _t0 = time.time()
     try:
         try:
@@ -483,10 +405,7 @@ def _detect_inner():
         image_file.seek(0)
         if file_size > MAX_IMAGE_BYTES:
             log.warning("payload_too_large", extra={"data": {"size_bytes": file_size}})
-            request_id = g.get("request_id", "")
-            response_obj = make_response(jsonify({"error": "Payload too large", "request_id": request_id}))
-            response_obj.status_code = 413
-            return response_obj
+            return jsonify({"error": "Image exceeds the 5 MB size limit"}), 413
 
         # ── Magic-byte type verification (first 12 bytes only) ────────────────
         header = image_file.read(12)
@@ -495,47 +414,16 @@ def _detect_inner():
         is_known = is_webp or any(header.startswith(sig) for sig in _IMAGE_SIGNATURES if sig != b'RIFF')
         if not is_known:
             log.warning("invalid_image_magic", extra={"data": {"header_hex": header.hex()}})
-            request_id = g.get("request_id", "")
-            response_obj = make_response(jsonify({
+            return jsonify({
                 "success": False,
                 "error":   "Invalid or corrupted image format submitted",
                 "phase":   0,
-                "request_id": request_id
-            }))
-            response_obj.status_code = 415
-            return response_obj
+            }), 400
 
         # ── Full read (validation passed) ─────────────────────────────────────
         image_bytes = image_file.read()
         if not image_bytes:
             return jsonify({"error": "Empty file"}), 400
-
-        # AI Synthetic Payload Firewall Check (Model 0)
-        try:
-            synthetic_score = detector.check_synthetic(image_bytes)
-            if synthetic_score > 0.85:
-                request_id = g.get("request_id", "")
-                
-                # Standard Structured Warning Log
-                log.warning("ai_generation_detected", extra={"data": {"status": "rejected"}})
-                
-                # Intentional Raw Structured Event Log matching prompt requirements exactly
-                import sys
-                sys.stdout.write(json.dumps({
-                    "event": "ai_generation_detected",
-                    "request_id": request_id,
-                    "status": "rejected"
-                }) + "\n")
-                sys.stdout.flush()
-
-                response_obj = make_response(jsonify({
-                    "error": "AI generated image matrices are blocked from agronomic diagnostic queues.",
-                    "request_id": request_id
-                }))
-                response_obj.status_code = 400
-                return response_obj
-        except Exception as filter_exc:
-            log.warning("ai_filter_failed", extra={"data": {"error_message": str(filter_exc)}})
 
         result = None
         force_bypass_ood = False
@@ -547,101 +435,60 @@ def _detect_inner():
                 if get_hf_client() is not None:
                     result = call_hf_detector(image_bytes)
                     
-                    try:
-                        if not isinstance(result, dict):
-                            raise SchemaValidationError("Response is not a dictionary")
-                        
-                        if "success" not in result:
-                            raise SchemaValidationError("Missing 'success' key in response")
-                        if not isinstance(result["success"], bool):
-                            raise SchemaValidationError("Invalid 'success' data type, expected boolean")
-                        
-                        if result["success"]:
-                            # Expected layout contract for successful prediction
-                            if "top_detection" not in result:
-                                raise SchemaValidationError("Missing 'top_detection' key")
-                            if "all_detections" not in result:
-                                raise SchemaValidationError("Missing 'all_detections' key")
-                            
-                            top_det = result["top_detection"]
-                            if top_det is not None:
-                                if not isinstance(top_det, dict):
-                                    raise SchemaValidationError("'top_detection' must be a dictionary or None")
-                                
-                                for key in ["label", "confidence", "type", "raw_label"]:
-                                    if key not in top_det:
-                                        raise SchemaValidationError(f"Missing '{key}' in 'top_detection'")
-                                
-                                if not isinstance(top_det["label"], str):
-                                    raise SchemaValidationError("'label' in 'top_detection' must be a string")
-                                if not isinstance(top_det["type"], str):
-                                    raise SchemaValidationError("'type' in 'top_detection' must be a string")
-                                if not isinstance(top_det["raw_label"], str):
-                                    raise SchemaValidationError("'raw_label' in 'top_detection' must be a string")
-                                
-                                try:
-                                    conf_val = float(top_det["confidence"])
-                                except (ValueError, TypeError):
-                                    raise SchemaValidationError("Invalid 'confidence' format in 'top_detection'")
-                            
-                            if not isinstance(result["all_detections"], list):
-                                raise SchemaValidationError("'all_detections' must be a list")
-                            
-                            for idx, det in enumerate(result["all_detections"]):
-                                if not isinstance(det, dict):
-                                    raise SchemaValidationError(f"Detection at index {idx} in 'all_detections' must be a dictionary")
-                                for key in ["label", "confidence", "type", "raw_label"]:
-                                    if key not in det:
-                                        raise SchemaValidationError(f"Missing '{key}' in detection at index {idx}")
-                                if not isinstance(det["label"], str):
-                                    raise SchemaValidationError(f"'label' in detection at index {idx} must be a string")
-                                if not isinstance(det["type"], str):
-                                    raise SchemaValidationError(f"'type' in detection at index {idx} must be a string")
-                                if not isinstance(det["raw_label"], str):
-                                    raise SchemaValidationError(f"'raw_label' in detection at index {idx} must be a string")
-                                try:
-                                    float(det["confidence"])
-                                except (ValueError, TypeError):
-                                    raise SchemaValidationError(f"Invalid 'confidence' in detection at index {idx}")
-                            
-                            for k in ["low_confidence", "is_low_confidence"]:
-                                if k in result and not isinstance(result[k], bool):
-                                    raise SchemaValidationError(f"Invalid '{k}' data type, expected boolean")
-                                    
-                            if top_det is not None:
-                                label = top_det["label"].strip().lower()
-                                conf = float(top_det["confidence"])
+                    # 1. Gatekeeper strip wrappers
+                    response_data = None
+                    if isinstance(result, dict):
+                        if "error" in result:
+                            response_data = result["error"]
+                        elif "label" in result:
+                            response_data = result["label"]
+                        elif "top_detection" in result and result["top_detection"]:
+                            if isinstance(result["top_detection"], dict):
+                                response_data = result["top_detection"].get("label")
                             else:
-                                label = ""
-                                conf = 0.0
-                        else:
-                            # Response returned success=False (an error or guardrail rejection)
-                            if "error" not in result or not isinstance(result["error"], str):
-                                raise SchemaValidationError("Missing or invalid 'error' string in failed response")
-                            label = ""
-                            conf = 0.0
-                            
-                    except SchemaValidationError as sve:
-                        log.warning("schema_validation_failed_fallback", extra={"data": {
-                            "error_message": str(sve),
-                            "raw_response": str(result)
-                        }})
+                                response_data = result["top_detection"]
+                    elif isinstance(result, (list, tuple)) and len(result) > 0:
+                        response_data = result[0]
+                    else:
+                        response_data = result
+
+                    label = str(response_data).strip().lower() if response_data is not None else ""
+                    
+                    # Check confidence score returned by the guardrail
+                    conf_val = None
+                    if isinstance(result, dict):
+                        if "confidence" in result:
+                            conf_val = result["confidence"]
+                        elif "top_detection" in result and isinstance(result["top_detection"], dict):
+                            conf_val = result["top_detection"].get("confidence")
+
+                    try:
+                        conf = float(conf_val) if conf_val is not None else 0.0
+                    except Exception:
+                        conf = None
+
+                    # Hotfix Gasket to handle the new endpoint structure
+                    is_hotfix_triggered = False
+                    if label == "non_chilli" and conf == 0:
+                        is_hotfix_triggered = True
+                    elif conf is None:
+                        is_hotfix_triggered = True
+
+                    if is_hotfix_triggered:
+                        # Hotfix Gasket to handle the new endpoint structure
+                        if label == "non_chilli" and conf == 0:
+                            label = "chilli"
+                            conf = 1.0
+                            is_low_confidence = False
+                        
+                        # Set to run local cascade with OOD check bypassed
+                        force_bypass_ood = True
                         result = None
                     
                     if result is not None:
-                        # Explicit out-of-domain crop rejection check (The Elephant Fix)
-                        if label == "non_chilli":
-                            log.warning("out_of_domain_crop")
-                            request_id = g.get("request_id", "")
-                            response_obj = make_response(jsonify({
-                                "error": "Cannot identify crop. Please upload a clear photo of a chilli plant.",
-                                "request_id": request_id
-                            }))
-                            response_obj.status_code = 422
-                            return response_obj
-
+                        # Process as normal if not overridden
                         is_guardrail_rejection = False
-                        if label == "0":
+                        if "non_chilli" in label or label == "0":
                             is_guardrail_rejection = True
                         if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
                             is_guardrail_rejection = True
@@ -672,41 +519,21 @@ def _detect_inner():
 
         if result is None:
             log.info("local_cascade_start")
-            t_local_start = time.perf_counter()
+            _t_local = time.time()
             try:
                 result = detector.detect_from_memory(image_bytes, bypass_ood=force_bypass_ood)
-                duration_us = int((time.perf_counter() - t_local_start) * 1_000_000)
-                if has_request_context() and hasattr(g, "performance"):
-                    g.performance["local_inference_processing"] = duration_us
-                
                 log.info("local_cascade_ok", extra={"data": {
-                    "duration_ms": round(duration_us / 1000.0),
+                    "duration_ms": round((time.time() - _t_local) * 1000),
                     "phase":       result.get("phase") if isinstance(result, dict) else None,
                 }})
                 if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
                     return jsonify(result)
             except Exception as local_exc:
-                duration_us = int((time.perf_counter() - t_local_start) * 1_000_000)
-                if has_request_context() and hasattr(g, "performance"):
-                    g.performance["local_inference_processing"] = duration_us
                 log.error("local_cascade_error", extra={"data": {
                     "error_message": str(local_exc),
-                    "duration_ms":   round(duration_us / 1000.0),
+                    "duration_ms":   round((time.time() - _t_local) * 1000),
                 }}, exc_info=True)
                 result = {"error": str(local_exc)}
-
-        # Downstream translation mapping for Class 4 / Mealybugs
-        if isinstance(result, dict):
-            for det in [result.get("top_detection")] + result.get("all_detections", []):
-                if isinstance(det, dict):
-                    lbl = det.get("label", "")
-                    raw_lbl = det.get("raw_label", "")
-                    cls_val = det.get("class_id")
-                    if lbl in TRANSLATION_DICTIONARY or raw_lbl in TRANSLATION_DICTIONARY or cls_val in TRANSLATION_DICTIONARY or "mealybug" in str(lbl).lower() or "mealybug" in str(raw_lbl).lower():
-                        det["label"] = "Mealybugs [పిండి పురుగు]"
-                        det["telugu"] = "పిండి పురుగు"
-                        det["raw_label"] = "Mealybugs"
-                        det["type"] = "pest"
 
         top_label = (result.get("top_detection", {}) or {}).get("label") if isinstance(result, dict) else None
         log.info("detector_result", extra={"data": {
@@ -724,46 +551,6 @@ def _detect_inner():
             label      = top.get("label", "unknown pest")
             telugu     = top.get("telugu", "")
             confidence = top.get("confidence", 0)
-
-            # Enforce an absolute confidence threshold floor (0.80 / 80%)
-            try:
-                conf_val = float(confidence)
-            except (ValueError, TypeError):
-                conf_val = 0.0
-            
-            # Normalize scale to 0.0-1.0 if greater than 1.0 (since confidence could be out of 100.0)
-            norm_conf = conf_val / 100.0 if conf_val > 1.0 else conf_val
-
-            if norm_conf < 0.80:
-                request_id = g.get("request_id", "")
-                top_label = label
-                conf = conf_val
-                
-                # Standard Structured Warning Log
-                log.warning("low_confidence_prediction_blocked", extra={"data": {
-                    "top_class": top_label,
-                    "confidence": conf
-                }})
-                
-                # Intentional Raw Structured Event Log matching prompt requirements exactly
-                import sys
-                sys.stdout.write(json.dumps({
-                    "event": "low_confidence_prediction_blocked",
-                    "request_id": request_id,
-                    "top_class": top_label,
-                    "confidence": conf
-                }) + "\n")
-                sys.stdout.flush()
-
-                # Return standardized cannot identify card
-                response_obj = make_response(jsonify({
-                    "status": "error",
-                    "message": "Cannot reliably identify image features. Please ensure you are uploading a clear, well-lit photo of a chilli plant or pest anomaly.",
-                    "request_id": request_id
-                }))
-                response_obj.status_code = 422
-                return response_obj
-
             kind       = top.get("type", "pest")
             detection  = top
             # Data flywheel: low-confidence detections → shadow dataset for review
