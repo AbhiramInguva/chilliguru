@@ -50,7 +50,7 @@ class TestMapRegionalRiskApi(unittest.TestCase):
 
     def test_regional_risk_200_with_coords(self):
         """Route returns 200 and a non-empty JSON array with explicit lat/lon."""
-        with patch("requests.get", side_effect=self._mock_meteo_ok):
+        with patch.object(app._http_session, "get", side_effect=self._mock_meteo_ok):
             resp = self.client.get("/api/regional-risk?lat=16.3&lon=80.4")
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.data)
@@ -61,7 +61,7 @@ class TestMapRegionalRiskApi(unittest.TestCase):
 
     def test_regional_risk_structured_keys(self):
         """Each location entry must contain mandatory climate and pest keys."""
-        with patch("requests.get", side_effect=self._mock_meteo_ok):
+        with patch.object(app._http_session, "get", side_effect=self._mock_meteo_ok):
             resp = self.client.get("/api/regional-risk?lat=16.3&lon=80.4")
         self.assertEqual(resp.status_code, 200)
         locations = json.loads(resp.data)
@@ -85,7 +85,7 @@ class TestMapRegionalRiskApi(unittest.TestCase):
 
     def test_regional_risk_fallback_coords(self):
         """Route must return 200 even when lat/lon query params are absent."""
-        with patch("requests.get", side_effect=self._mock_meteo_ok):
+        with patch.object(app._http_session, "get", side_effect=self._mock_meteo_ok):
             resp = self.client.get("/api/regional-risk")
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.data)
@@ -99,7 +99,7 @@ class TestMapRegionalRiskApi(unittest.TestCase):
 
     def test_regional_risk_meteo_timeout_graceful(self):
         """A network timeout from Open-Meteo must NOT crash the endpoint."""
-        with patch("requests.get", side_effect=self._mock_meteo_timeout):
+        with patch.object(app._http_session, "get", side_effect=self._mock_meteo_timeout):
             resp = self.client.get("/api/regional-risk?lat=16.5&lon=79.5")
         self.assertEqual(resp.status_code, 200,
                          "Endpoint must return 200 even when Open-Meteo is unreachable")
@@ -112,7 +112,7 @@ class TestMapRegionalRiskApi(unittest.TestCase):
 
     def test_regional_risk_numeric_climate_values(self):
         """Temperature and humidity must be numeric floats / ints."""
-        with patch("requests.get", side_effect=self._mock_meteo_ok):
+        with patch.object(app._http_session, "get", side_effect=self._mock_meteo_ok):
             resp = self.client.get("/api/regional-risk?lat=17.0&lon=81.0")
         data = json.loads(resp.data)
         for loc in data:

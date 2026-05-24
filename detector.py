@@ -326,6 +326,41 @@ CLASS_THRESHOLDS = {
     "Armyworm": 0.50,         # Standard threshold for surface caterpillars
     "Aphids": 0.45
 }
+
+# ── Unified threshold resolver ────────────────────────────────────────────────
+# Consolidates CLASS_THRESHOLDS, CLASS_SPECIFIC_THRESHOLDS, and the global
+# CONFIDENCE_THRESHOLD into a single dict-driven lookup so both Phase 1 and
+# Phase 2 use the same code path and we avoid duplicated branches.
+
+def _resolve_conf_threshold(friendly_eng: str, raw_label: str) -> float:
+    """
+    Return the effective percentage-scale confidence threshold for a label.
+    Priority order:
+      1. CLASS_SPECIFIC_THRESHOLDS (keyed by raw_label or friendly_eng)
+      2. CLASS_THRESHOLDS keyword match (fruit borer / armyworm / aphid)
+      3. Global CONFIDENCE_THRESHOLD fallback
+    """
+    # 1. Specific overrides
+    specific = (
+        CLASS_SPECIFIC_THRESHOLDS.get(raw_label)
+        or CLASS_SPECIFIC_THRESHOLDS.get(friendly_eng)
+    )
+    if specific is not None:
+        return float(specific)
+
+    # 2. Keyword-driven CLASS_THRESHOLDS
+    lbl_lower = (friendly_eng + " " + raw_label).lower()
+    _keyword_map = {
+        "fruit borer": "Fruit Borer",
+        "armyworm":    "Armyworm",
+        "aphid":       "Aphids",
+    }
+    for kw, key in _keyword_map.items():
+        if kw in lbl_lower:
+            return CLASS_THRESHOLDS[key] * 100.0
+
+    # 3. Global fallback
+    return float(CONFIDENCE_THRESHOLD)
 _phase1_model = None
 _phase2_model = None
 _phase3_model = None
@@ -938,21 +973,9 @@ def _detect_source_impl(source, bypass_ood=False):
                     if custom_thresh is None:
                         custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(friendly_eng)
                     
-                    is_low = top["confidence"] < CONFIDENCE_THRESHOLD
-                    if custom_thresh is not None and top["confidence"] < custom_thresh:
-                         is_low = True
-
-                    # Also check CLASS_THRESHOLDS mapping for low confidence setting
-                    class_thresh_val = None
-                    if "fruit borer" in friendly_eng.lower() or "fruit borer" in top["raw_label"].lower():
-                        class_thresh_val = CLASS_THRESHOLDS["Fruit Borer"] * 100.0
-                    elif "armyworm" in friendly_eng.lower() or "armyworm" in top["raw_label"].lower():
-                        class_thresh_val = CLASS_THRESHOLDS["Armyworm"] * 100.0
-                    elif "aphid" in friendly_eng.lower() or "aphid" in top["raw_label"].lower():
-                        class_thresh_val = CLASS_THRESHOLDS["Aphids"] * 100.0
-                    
-                    if class_thresh_val is not None and top["confidence"] < class_thresh_val:
-                        is_low = True
+                    # ── Unified threshold lookup (replaces scattered conditional branches) ──
+                    eff_thresh = _resolve_conf_threshold(friendly_eng, top["raw_label"])
+                    is_low = top["confidence"] < eff_thresh
 
                     phase1_result = {
                         "success":        True,
@@ -967,9 +990,24 @@ def _detect_source_impl(source, bypass_ood=False):
         log.error("phase1_inference_error", extra={"data": {"error_message": str(e)}})
 
     if phase1_result and phase1_result["success"]:
-        # Dual-model consensus check:
-        # Establish a validation step between our specialized local fallback classifier (IP102) and primary cascade.
         top_det = phase1_result.get("top_detection")
+
+        # ── High-confidence early-return: skip the consensus check entirely ──
+        # If Phase 1 is already above ALL thresholds for this label, the dual-model
+        # IP102 consensus pass is redundant — return immediately to save inference time.
+        if top_det:
+            eff_thresh = _resolve_conf_threshold(
+                top_det.get("label", ""), top_det.get("raw_label", "")
+            )
+            if top_det["confidence"] >= eff_thresh and not phase1_result.get("low_confidence"):
+                log.info("phase1_high_conf_fast_return", extra={"data": {
+                    "label":      top_det.get("raw_label"),
+                    "confidence": top_det["confidence"],
+                    "threshold":  eff_thresh,
+                }})
+                return phase1_result
+
+        # ── Dual-model consensus check (only for ambiguous / borderline cases) ──
         if top_det and ("fruit borer" in top_det.get("label", "").lower() or "fruit borer" in top_det.get("raw_label", "").lower()):
             try:
                 p2_model = _load_ip102_model()
@@ -1109,21 +1147,9 @@ def _detect_source_impl(source, bypass_ood=False):
                     if custom_thresh is None:
                         custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(friendly_eng)
 
-                    is_low = top["confidence"] < CONFIDENCE_THRESHOLD
-                    if custom_thresh is not None and top["confidence"] < custom_thresh:
-                        is_low = True
-
-                    # Also check CLASS_THRESHOLDS mapping for low confidence setting
-                    class_thresh_val = None
-                    if "fruit borer" in friendly_eng.lower() or "fruit borer" in mapped_raw.lower() or "fruit borer" in top["raw_label"].lower():
-                        class_thresh_val = CLASS_THRESHOLDS["Fruit Borer"] * 100.0
-                    elif "armyworm" in friendly_eng.lower() or "armyworm" in mapped_raw.lower() or "armyworm" in top["raw_label"].lower():
-                        class_thresh_val = CLASS_THRESHOLDS["Armyworm"] * 100.0
-                    elif "aphid" in friendly_eng.lower() or "aphid" in mapped_raw.lower() or "aphid" in top["raw_label"].lower():
-                        class_thresh_val = CLASS_THRESHOLDS["Aphids"] * 100.0
-                    
-                    if class_thresh_val is not None and top["confidence"] < class_thresh_val:
-                        is_low = True
+                    # ── Unified threshold lookup (replaces scattered conditional branches) ──
+                    eff_thresh = _resolve_conf_threshold(friendly_eng, mapped_raw)
+                    is_low = top["confidence"] < eff_thresh
 
                     phase2_result = {
                         "success":        True,

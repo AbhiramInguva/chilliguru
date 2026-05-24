@@ -8,6 +8,8 @@ import threading
 import time
 import traceback
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+import requests
 from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 from flask_cors import CORS
 from flask_limiter import Limiter
@@ -15,6 +17,13 @@ from flask_limiter.util import get_remote_address
 from gradio_client import Client, handle_file
 from groq import Groq
 import detector
+
+# ── Global background worker pool (replaces per-request daemon Thread spawns) ──
+# max_workers=2 keeps total thread headroom well within the 150 MB container.
+_shadow_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="shadow-worker")
+
+# ── Persistent HTTP session (connection-pool reuse for Open-Meteo calls) ──
+_http_session = requests.Session()
 
 # ── Structured JSON logger ────────────────────────────────────────────────────
 class _JsonFormatter(logging.Formatter):
@@ -419,14 +428,8 @@ def _shadow_save(image_bytes: bytes, label: str, confidence, trigger: str) -> No
 
 def _trigger_shadow_save(image_bytes: bytes, label: str,
                          confidence, trigger: str) -> None:
-    """Launch _shadow_save in a daemon thread so it never blocks the response."""
-    t = threading.Thread(
-        target=_shadow_save,
-        args=(image_bytes, label, confidence, trigger),
-        daemon=True,
-        name=f"shadow-save-{trigger}",
-    )
-    t.start()
+    """Submit _shadow_save to the global thread-pool instead of spawning a new daemon thread."""
+    _shadow_executor.submit(_shadow_save, image_bytes, label, confidence, trigger)
 
 
 SYSTEM_PROMPT = """IMPORTANT: Always respond in English unless the farmer writes in Telugu, Hindi, or Tamil first. Default language is English.
@@ -474,7 +477,6 @@ def health():
 
 @app.route("/api/regional-risk")
 def regional_risk():
-    import requests
     try:
         lat = float(request.args.get("lat"))
         lon = float(request.args.get("lon"))
@@ -486,7 +488,7 @@ def regional_risk():
     humidity = 60.0
     try:
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m"
-        resp = requests.get(url, timeout=3.0)
+        resp = _http_session.get(url, timeout=3.0)
         if resp.status_code == 200:
             data = resp.json()
             current = data.get("current", {})
