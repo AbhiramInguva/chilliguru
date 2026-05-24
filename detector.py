@@ -45,6 +45,79 @@ class MockResult:
         self.boxes = boxes
         self.names = names
 
+def _generate_image_slices(image_array, slice_size=320, overlap=48):
+    """
+    Slices an image array into a sequential grid of size slice_size x slice_size
+    with the specified overlap.
+    Returns a list of tuples: (slice_image, xmin, ymin, xmax, ymax)
+    where xmin, ymin, xmax, ymax are coordinates on the global image.
+    """
+    h, w = image_array.shape[:2]
+    slices = []
+    
+    # Calculate step size
+    step = slice_size - overlap
+    
+    # Generate y coordinates
+    y_coords = list(range(0, h - slice_size + 1, step))
+    if not y_coords or y_coords[-1] + slice_size < h:
+        y_coords.append(max(0, h - slice_size))
+        
+    # Generate x coordinates
+    x_coords = list(range(0, w - slice_size + 1, step))
+    if not x_coords or x_coords[-1] + slice_size < w:
+        x_coords.append(max(0, w - slice_size))
+        
+    for y in y_coords:
+        for x in x_coords:
+            crop = image_array[y : y + slice_size, x : x + slice_size]
+            slices.append((crop, x, y, x + slice_size, y + slice_size))
+            
+    return slices
+
+
+def _spatial_nms(boxes, scores, iou_threshold=0.45):
+    """
+    Explicit Intersection-over-Union (IoU) box assembly function to merge/filter
+    overlapping predictions across slice bounds.
+    """
+    if len(boxes) == 0:
+        return []
+    
+    boxes = np.array(boxes)
+    scores = np.array(scores)
+    
+    x1 = boxes[:, 0]
+    y1 = boxes[:, 1]
+    x2 = boxes[:, 2]
+    y2 = boxes[:, 3]
+    
+    areas = (x2 - x1) * (y2 - y1)
+    order = scores.argsort()[::-1]
+    
+    keep = []
+    while order.size > 0:
+        i = order[0]
+        keep.append(i)
+        
+        xx1 = np.maximum(x1[i], x1[order[1:]])
+        yy1 = np.maximum(y1[i], y1[order[1:]])
+        xx2 = np.minimum(x2[i], x2[order[1:]])
+        yy2 = np.minimum(y2[i], y2[order[1:]])
+        
+        w = np.maximum(0.0, xx2 - xx1)
+        h = np.maximum(0.0, yy2 - yy1)
+        
+        inter = w * h
+        union = areas[i] + areas[order[1:]] - inter
+        iou = inter / (union + 1e-8)
+        
+        inds = np.where(iou <= iou_threshold)[0]
+        order = order[inds + 1]
+        
+    return keep
+
+
 class ONNXYOLO:
     def __init__(self, model_path):
         self.model_path = model_path
@@ -98,56 +171,121 @@ class ONNXYOLO:
             raise ValueError(f"Unsupported source type: {type(source)}")
             
         h0, w0 = img0.shape[:2]
-        img = cv2.resize(img0, (640, 640))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = img.astype(np.float32) / 255.0
-        img = np.transpose(img, (2, 0, 1))
-        img = np.expand_dims(img, axis=0)
         
-        outputs = self.session.run([self.output_name], {self.input_name: img})
-        output = outputs[0]
-        output = output[0]
-        output = np.transpose(output, (1, 0))
-        
-        boxes = output[:, :4]
-        scores = output[:, 4:]
-        
-        class_ids = np.argmax(scores, axis=1)
-        confidences = np.max(scores, axis=1)
-        
-        mask = confidences >= conf
-        boxes = boxes[mask]
-        confidences = confidences[mask]
-        class_ids = class_ids[mask]
-        
-        if len(boxes) > 0:
-            xc, yc, w, h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
-            x1 = xc - w / 2
-            y1 = yc - h / 2
-            x2 = xc + w / 2
-            y2 = yc + h / 2
-            boxes = np.stack([x1, y1, x2, y2], axis=1)
+        if h0 > 320 or w0 > 320:
+            # Run sliced inference (SAHI)
+            slices = _generate_image_slices(img0, slice_size=320, overlap=48)
+            all_boxes = []
+            all_confidences = []
+            all_class_ids = []
             
-            scale_x = w0 / 640.0
-            scale_y = h0 / 640.0
-            boxes[:, 0] *= scale_x
-            boxes[:, 2] *= scale_x
-            boxes[:, 1] *= scale_y
-            boxes[:, 3] *= scale_y
+            for crop, slice_xmin, slice_ymin, slice_xmax, slice_ymax in slices:
+                slice_w = slice_xmax - slice_xmin
+                slice_h = slice_ymax - slice_ymin
+                
+                img = cv2.resize(crop, (640, 640))
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img = img.astype(np.float32) / 255.0
+                img = np.transpose(img, (2, 0, 1))
+                img = np.expand_dims(img, axis=0)
+                
+                outputs = self.session.run([self.output_name], {self.input_name: img})
+                output = outputs[0][0]
+                output = np.transpose(output, (1, 0))
+                
+                boxes = output[:, :4]
+                scores = output[:, 4:]
+                
+                class_ids = np.argmax(scores, axis=1)
+                confidences = np.max(scores, axis=1)
+                
+                mask = confidences >= conf
+                boxes = boxes[mask]
+                confidences = confidences[mask]
+                class_ids = class_ids[mask]
+                
+                if len(boxes) > 0:
+                    xc, yc, w, h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+                    x1 = xc - w / 2
+                    y1 = yc - h / 2
+                    x2 = xc + w / 2
+                    y2 = yc + h / 2
+                    
+                    x1_global = x1 * (slice_w / 640.0) + slice_xmin
+                    y1_global = y1 * (slice_h / 640.0) + slice_ymin
+                    x2_global = x2 * (slice_w / 640.0) + slice_xmin
+                    y2_global = y2 * (slice_h / 640.0) + slice_ymin
+                    
+                    for i in range(len(boxes)):
+                        all_boxes.append([x1_global[i], y1_global[i], x2_global[i], y2_global[i]])
+                        all_confidences.append(float(confidences[i]))
+                        all_class_ids.append(int(class_ids[i]))
+                        
+            # Apply NMS on all gathered predictions
+            keep = _spatial_nms(all_boxes, all_confidences, iou_threshold=0.45)
+            
+            mock_boxes = []
+            for idx in keep:
+                mock_boxes.append(MockBox(
+                    cls_id=all_class_ids[idx],
+                    conf=all_confidences[idx],
+                    xyxy=all_boxes[idx]
+                ))
+                
+            return [MockResult(boxes=mock_boxes, names=self.names)]
+            
         else:
-            boxes = np.empty((0, 4))
+            # Standard single-frame fallback
+            img = cv2.resize(img0, (640, 640))
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img = img.astype(np.float32) / 255.0
+            img = np.transpose(img, (2, 0, 1))
+            img = np.expand_dims(img, axis=0)
             
-        keep = self._nms(boxes, confidences, iou)
-        
-        mock_boxes = []
-        for idx in keep:
-            mock_boxes.append(MockBox(
-                cls_id=int(class_ids[idx]),
-                conf=float(confidences[idx]),
-                xyxy=boxes[idx].tolist()
-            ))
+            outputs = self.session.run([self.output_name], {self.input_name: img})
+            output = outputs[0]
+            output = output[0]
+            output = np.transpose(output, (1, 0))
             
-        return [MockResult(boxes=mock_boxes, names=self.names)]
+            boxes = output[:, :4]
+            scores = output[:, 4:]
+            
+            class_ids = np.argmax(scores, axis=1)
+            confidences = np.max(scores, axis=1)
+            
+            mask = confidences >= conf
+            boxes = boxes[mask]
+            confidences = confidences[mask]
+            class_ids = class_ids[mask]
+            
+            if len(boxes) > 0:
+                xc, yc, w, h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+                x1 = xc - w / 2
+                y1 = yc - h / 2
+                x2 = xc + w / 2
+                y2 = yc + h / 2
+                boxes = np.stack([x1, y1, x2, y2], axis=1)
+                
+                scale_x = w0 / 640.0
+                scale_y = h0 / 640.0
+                boxes[:, 0] *= scale_x
+                boxes[:, 2] *= scale_x
+                boxes[:, 1] *= scale_y
+                boxes[:, 3] *= scale_y
+            else:
+                boxes = np.empty((0, 4))
+                
+            keep = self._nms(boxes, confidences, iou)
+            
+            mock_boxes = []
+            for idx in keep:
+                mock_boxes.append(MockBox(
+                    cls_id=int(class_ids[idx]),
+                    conf=float(confidences[idx]),
+                    xyxy=boxes[idx].tolist()
+                ))
+                
+            return [MockResult(boxes=mock_boxes, names=self.names)]
         
     def _nms(self, boxes, scores, iou_threshold):
         if len(boxes) == 0:
