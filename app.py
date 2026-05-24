@@ -470,9 +470,13 @@ def chat():
         history = data.get("history", [])
         if not message:
             return jsonify({"error": "No message"}), 400
-        lang = data.get("lang", "").strip().lower() if "lang" in data else ""
+        lang = (
+            data.get("lang", "").strip().lower()
+            or request.headers.get("lang", "").strip().lower()
+            or request.headers.get("Accept-Language", "").strip().lower()
+        )
         if lang:
-            lang = lang.split("-")[0]
+            lang = re.split(r'[-,;]', lang)[0].strip()
         if not lang or lang not in ["en", "hi", "te", "kn", "ta"]:
             if re.search(r"[\u0c00-\u0c7f]", message):
                 lang = "te"
@@ -706,9 +710,14 @@ def _detect_inner():
         is_low = result.get("low_confidence", False) if isinstance(result, dict) else True
 
         # Extract language code and fallback to auto-detection
-        lang = request.form.get("lang", "").strip().lower() or request.args.get("lang", "").strip().lower()
+        lang = (
+            request.headers.get("lang", "").strip().lower()
+            or request.headers.get("Accept-Language", "").strip().lower()
+            or request.form.get("lang", "").strip().lower()
+            or request.args.get("lang", "").strip().lower()
+        )
         if lang:
-            lang = lang.split("-")[0]
+            lang = re.split(r'[-,;]', lang)[0].strip()
         
         # Helper to auto-detect if not provided or invalid
         if not lang or lang not in ["en", "hi", "te", "kn", "ta"]:
@@ -814,9 +823,14 @@ def _detect_inner():
             )
     else:
         # Determine lang for chat/fallback path
-        lang = request.form.get("lang", "").strip().lower() or request.args.get("lang", "").strip().lower()
+        lang = (
+            request.headers.get("lang", "").strip().lower()
+            or request.headers.get("Accept-Language", "").strip().lower()
+            or request.form.get("lang", "").strip().lower()
+            or request.args.get("lang", "").strip().lower()
+        )
         if lang:
-            lang = lang.split("-")[0]
+            lang = re.split(r'[-,;]', lang)[0].strip()
         if not lang or lang not in ["en", "hi", "te", "kn", "ta"]:
             if re.search(r"[\u0c00-\u0c7f]", user_msg):
                 lang = "te"

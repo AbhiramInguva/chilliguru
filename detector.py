@@ -51,6 +51,8 @@ class ONNXYOLO:
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 1
         opts.inter_op_num_threads = 1
+        opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        opts.enable_cpu_mem_arena = False
         self.session = ort.InferenceSession(model_path, opts)
         self.input_name = self.session.get_inputs()[0].name
         self.output_name = self.session.get_outputs()[0].name

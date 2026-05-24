@@ -302,6 +302,74 @@ class TestFieldScenarios(unittest.TestCase):
             self.assertNotIn("పేను పురుగు", user_msg)
             self.assertIn("Detected: माहू (एफिड्स)", user_msg)
 
+    @patch("app.get_hf_client")
+    @patch("app._cb_is_open")
+    @patch("app.detector.detect_from_memory")
+    def test_language_extraction_from_request_headers(self, mock_detect_local, mock_cb, mock_get_client):
+        """
+        Verify that /detect parses the farmer's localized language setting from the HTTP request headers.
+        """
+        mock_cb.return_value = False
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        
+        # Mock HF space to return Pest-Myzus persicae (Aphids)
+        mock_client.predict.return_value = {
+            "success": True,
+            "low_confidence": False,
+            "is_low_confidence": False,
+            "top_detection": {
+                "label": "Pest-Myzus persicae (Aphids)",
+                "telugu": "పేను పురుగు",
+                "confidence": 90.0,
+                "type": "pest",
+                "raw_label": "Pest-Myzus persicae (Aphids)"
+            },
+            "all_detections": [
+                {
+                    "label": "Pest-Myzus persicae (Aphids)",
+                    "telugu": "పేను పురుగు",
+                    "confidence": 90.0,
+                    "type": "pest",
+                    "raw_label": "Pest-Myzus persicae (Aphids)"
+                }
+            ]
+        }
+        
+        # Mock Groq client
+        with patch("app.get_client") as mock_groq:
+            mock_comp = MagicMock()
+            mock_groq.return_value.chat.completions.create.return_value = [mock_comp]
+            mock_comp.choices = [MagicMock()]
+            mock_comp.choices[0].delta.content = "Advisory response"
+            
+            data = {
+                "image": (io.BytesIO(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00"), "aphid_test.jpg"),
+                "message": "पौधे पर कीड़े हैं", # Hindi message
+            }
+            
+            # Send language code in Accept-Language header
+            headers = {
+                "Accept-Language": "hi-IN,hi;q=0.9,en;q=0.8"
+            }
+            
+            response = self.client.post("/detect", data=data, headers=headers, content_type="multipart/form-data")
+            self.assertEqual(response.status_code, 200)
+            
+            # Consume stream to trigger Groq client call
+            _ = list(response.response)
+            
+            # Assert that the prompt cleanly isolated to Hindi
+            args, kwargs = mock_groq.return_value.chat.completions.create.call_args
+            messages = kwargs.get("messages", [])
+            system_msg = next(m["content"] for m in messages if m["role"] == "system")
+            user_msg = next(m["content"] for m in messages if m["role"] == "user")
+            
+            self.assertIn("IMPORTANT: You must respond in Hindi", system_msg)
+            self.assertNotIn("పేను పురుగు", system_msg)
+            self.assertNotIn("పేను పురుగు", user_msg)
+            self.assertIn("Detected: माहू (एफिड्स)", user_msg)
+
 if __name__ == "__main__":
     unittest.main()
 
