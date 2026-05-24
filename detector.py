@@ -13,6 +13,7 @@ import warnings
 import onnxruntime as ort
 import numpy as np
 import cv2
+import gc
 
 warnings.filterwarnings("ignore")
 
@@ -49,11 +50,9 @@ def _generate_image_slices(image_array, slice_size=320, overlap=48):
     """
     Slices an image array into a sequential grid of size slice_size x slice_size
     with the specified overlap.
-    Returns a list of tuples: (slice_image, xmin, ymin, xmax, ymax)
-    where xmin, ymin, xmax, ymax are coordinates on the global image.
+    Yields a single cropped patch viewport tuple (tile_array, x_offset, y_offset) sequentially.
     """
     h, w = image_array.shape[:2]
-    slices = []
     
     # Calculate step size
     step = slice_size - overlap
@@ -71,9 +70,7 @@ def _generate_image_slices(image_array, slice_size=320, overlap=48):
     for y in y_coords:
         for x in x_coords:
             crop = image_array[y : y + slice_size, x : x + slice_size]
-            slices.append((crop, x, y, x + slice_size, y + slice_size))
-            
-    return slices
+            yield crop, x, y
 
 
 def _spatial_nms(boxes, scores, iou_threshold=0.45):
@@ -174,16 +171,14 @@ class ONNXYOLO:
         
         if h0 > 320 or w0 > 320:
             # Run sliced inference (SAHI)
-            slices = _generate_image_slices(img0, slice_size=320, overlap=48)
             all_boxes = []
             all_confidences = []
             all_class_ids = []
             
-            for crop, slice_xmin, slice_ymin, slice_xmax, slice_ymax in slices:
-                slice_w = slice_xmax - slice_xmin
-                slice_h = slice_ymax - slice_ymin
+            for tile_array, x_offset, y_offset in _generate_image_slices(img0, slice_size=320, overlap=48):
+                slice_h, slice_w = tile_array.shape[:2]
                 
-                img = cv2.resize(crop, (640, 640))
+                img = cv2.resize(tile_array, (640, 640))
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 img = img.astype(np.float32) / 255.0
                 img = np.transpose(img, (2, 0, 1))
@@ -211,15 +206,18 @@ class ONNXYOLO:
                     x2 = xc + w / 2
                     y2 = yc + h / 2
                     
-                    x1_global = x1 * (slice_w / 640.0) + slice_xmin
-                    y1_global = y1 * (slice_h / 640.0) + slice_ymin
-                    x2_global = x2 * (slice_w / 640.0) + slice_xmin
-                    y2_global = y2 * (slice_h / 640.0) + slice_ymin
+                    x1_global = x1 * (slice_w / 640.0) + x_offset
+                    y1_global = y1 * (slice_h / 640.0) + y_offset
+                    x2_global = x2 * (slice_w / 640.0) + x_offset
+                    y2_global = y2 * (slice_h / 640.0) + y_offset
                     
                     for i in range(len(boxes)):
                         all_boxes.append([x1_global[i], y1_global[i], x2_global[i], y2_global[i]])
                         all_confidences.append(float(confidences[i]))
                         all_class_ids.append(int(class_ids[i]))
+                        
+                del tile_array
+                gc.collect()
                         
             # Apply NMS on all gathered predictions
             keep = _spatial_nms(all_boxes, all_confidences, iou_threshold=0.45)
