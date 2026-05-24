@@ -1,3 +1,5 @@
+import functools
+import gc
 import json
 import logging
 import os
@@ -10,6 +12,11 @@ import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 import requests
+
+# ── Calibrate GC thresholds at process launch ─────────────────────────────────
+# Raises gen-0 threshold so the collector runs less aggressively per request,
+# preventing blocking pauses inside the hot /chat and /detect handlers.
+gc.set_threshold(1000, 10, 10)
 from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 from flask_cors import CORS
 from flask_limiter import Limiter
@@ -139,30 +146,42 @@ def to_core_class(label_or_name):
         return "mealybugs"
     return None
 
+# ── Pre-compiled script regex map (built once at module load) ─────────────────
+# Eliminates repeated re.compile() calls inside strip_cross_contamination at
+# runtime — the compiled Pattern objects are reused across every request.
+_SCRIPT_RE: dict = {
+    "hi": re.compile(r"[\u0900-\u097f]"),
+    "te": re.compile(r"[\u0c00-\u0c7f]"),
+    "kn": re.compile(r"[\u0c80-\u0cff]"),
+    "ta": re.compile(r"[\u0b80-\u0bff]"),
+}
+_CLEANUP_RE = {
+    "brackets_with_content": re.compile(r"\s*\[[^\]]*\]"),
+    "empty_brackets":        re.compile(r"\s*\[\s*\]"),
+    "empty_parens":          re.compile(r"\s*\(\s*\)"),
+    "multi_space":           re.compile(r"\s+"),
+}
+
+# lru_cache memoises identical (text, target_lang) pairs across a request
+# burst — repeated SYSTEM_PROMPT cleaning calls become O(1) dict lookups.
+@functools.lru_cache(maxsize=128)
 def strip_cross_contamination(text, target_lang):
     if not isinstance(text, str):
         return text
-    
-    scripts = {
-        "hi": r"[\u0900-\u097f]",
-        "te": r"[\u0c00-\u0c7f]",
-        "kn": r"[\u0c80-\u0cff]",
-        "ta": r"[\u0b80-\u0bff]"
-    }
-    
+
     if target_lang == "en":
-        text = re.sub(r"\s*\[[^\]]*\]", "", text)
-        for lang_code, pattern in scripts.items():
-            text = re.sub(pattern, "", text)
+        text = _CLEANUP_RE["brackets_with_content"].sub("", text)
+        for script_re in _SCRIPT_RE.values():
+            text = script_re.sub("", text)
     else:
-        for lang_code, pattern in scripts.items():
+        for lang_code, script_re in _SCRIPT_RE.items():
             if lang_code != target_lang:
-                text = re.sub(pattern, "", text)
-        text = re.sub(r"\s*\[\s*\]", "", text)
-    
-    text = re.sub(r"\s*\(\s*\)", "", text)
-    text = re.sub(r"\s*\[\s*\]", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
+                text = script_re.sub("", text)
+        text = _CLEANUP_RE["empty_brackets"].sub("", text)
+
+    text = _CLEANUP_RE["empty_parens"].sub("", text)
+    text = _CLEANUP_RE["empty_brackets"].sub("", text)
+    text = _CLEANUP_RE["multi_space"].sub(" ", text).strip()
     return text
 
 MODEL          = "llama-3.3-70b-versatile"
@@ -716,69 +735,272 @@ def chat():
         history = data.get("history", [])
         if not message:
             return jsonify({"error": "No message"}), 400
-        lang = (
-            data.get("lang", "").strip().lower()
-            or request.headers.get("lang", "").strip().lower()
-            or request.headers.get("Accept-Language", "").strip().lower()
-        )
-        if lang:
-            lang = re.split(r'[-,;]', lang)[0].strip()
-        if not lang or lang not in ["en", "hi", "te", "kn", "ta"]:
-            if re.search(r"[\u0c00-\u0c7f]", message):
-                lang = "te"
-            elif re.search(r"[\u0900-\u097f]", message):
-                lang = "hi"
-            elif re.search(r"[\u0c80-\u0cff]", message):
-                lang = "kn"
-            elif re.search(r"[\u0b80-\u0bff]", message):
-                lang = "ta"
-            else:
-                lang = "en"
-        
+
+        # Sub-module 1: resolve language (explicit tag fast-path or script scan)
+        lang = _resolve_request_language(message)
+        # JSON payload 'lang' field is highest-priority override
+        payload_lang = data.get("lang", "").strip().lower()
+        if payload_lang:
+            tag = re.split(r'[-,;]', payload_lang)[0].strip()
+            if tag in _SUPPORTED_LANGS:
+                lang = tag  # early-return fast-path — no further script scanning needed
+
         system_content = strip_cross_contamination(SYSTEM_PROMPT, lang)
-        lang_instruction_map = {
-            "en": "\nIMPORTANT: You must respond in English.",
-            "hi": "\nIMPORTANT: You must respond in Hindi (हिंदी).",
-            "te": "\nIMPORTANT: You must respond in Telugu (తెలుగు).",
-            "kn": "\nIMPORTANT: You must respond in Kannada (ಕನ್ನಡ).",
-            "ta": "\nIMPORTANT: You must respond in Tamil (தமிழ்)."
-        }
-        system_content += lang_instruction_map.get(lang, "\nIMPORTANT: You must respond in English.")
+        system_content += _LANG_INSTRUCTION_MAP.get(lang, "\nIMPORTANT: You must respond in English.")
         system_content = strip_cross_contamination(system_content, lang)
-        
-        message_clean = strip_cross_contamination(message, lang)
-        try:
-            messages = [{"role": "system", "content": system_content}] + history + [{"role": "user", "content": message_clean}]
-            response = get_client().chat.completions.create(model=MODEL, messages=messages, max_tokens=MAX_TOKENS, temperature=0.7)
-            return jsonify({"reply": response.choices[0].message.content.strip()})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    finally:
-        import gc
-        gc.collect()
+        message_clean  = strip_cross_contamination(message, lang)
+
+        messages = (
+            [{"role": "system", "content": system_content}]
+            + history
+            + [{"role": "user", "content": message_clean}]
+        )
+        response = get_client().chat.completions.create(
+            model=MODEL, messages=messages, max_tokens=MAX_TOKENS, temperature=0.7
+        )
+        return jsonify({"reply": response.choices[0].message.content.strip()})
+    except Exception as e:
+        log.error("chat_error", extra={"data": {"error_message": str(e)}}, exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/detect", methods=["POST"])
 @limiter.limit("5 per minute")
 def detect():
     _t0 = time.time()
     try:
-        try:
-            resp = _detect_inner()
-            status_code = resp[1] if isinstance(resp, tuple) else resp.status_code
-            log.info("detect_complete", extra={"data": {
-                "duration_ms": round((time.time() - _t0) * 1000),
-                "status_code": status_code,
-            }})
-            return resp
-        except Exception as e:
-            log.error("detect_unhandled_error", extra={"data": {
-                "error_message": str(e),
-                "duration_ms":   round((time.time() - _t0) * 1000),
-            }}, exc_info=True)
-            return jsonify({"success": False, "error": "Internal Processing Error"}), 500
-    finally:
-        import gc
-        gc.collect()
+        resp = _detect_inner()
+        status_code = resp[1] if isinstance(resp, tuple) else resp.status_code
+        log.info("detect_complete", extra={"data": {
+            "duration_ms": round((time.time() - _t0) * 1000),
+            "status_code": status_code,
+        }})
+        return resp
+    except Exception as e:
+        log.error("detect_unhandled_error", extra={"data": {
+            "error_message": str(e),
+            "duration_ms":   round((time.time() - _t0) * 1000),
+        }}, exc_info=True)
+        return jsonify({"success": False, "error": "Internal Processing Error"}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Decoupled sub-functions extracted from _detect_inner()
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SUPPORTED_LANGS = frozenset(["en", "hi", "te", "kn", "ta"])
+_LANG_INSTRUCTION_MAP = {
+    "en": "\nIMPORTANT: You must respond in English.",
+    "hi": "\nIMPORTANT: You must respond in Hindi (हिंदी).",
+    "te": "\nIMPORTANT: You must respond in Telugu (తెలుగు).",
+    "kn": "\nIMPORTANT: You must respond in Kannada (ಕನ್ನಡ).",
+    "ta": "\nIMPORTANT: You must respond in Tamil (தமிழ்).",
+}
+
+
+def _resolve_request_language(user_msg: str) -> str:
+    """
+    Sub-module 1: Resolve the target language for this request.
+
+    Priority:
+      1. Explicit 'lang' header / form param / query param.
+      2. Accept-Language header (first tag only).
+      3. Unicode script auto-detection on user_msg.
+      4. Default → 'en'.
+
+    Early-return fast-path: if an explicit, valid language tag is supplied
+    we skip all downstream script-scanning gates immediately.
+    """
+    # Priority 1 & 2 — explicit tag sources
+    raw = (
+        request.headers.get("lang", "").strip().lower()
+        or request.headers.get("Accept-Language", "").strip().lower()
+        or request.form.get("lang", "").strip().lower()
+        or request.args.get("lang", "").strip().lower()
+    )
+    if raw:
+        tag = re.split(r'[-,;]', raw)[0].strip()
+        if tag in _SUPPORTED_LANGS:
+            # Fast-path: definitive explicit code — no script scanning needed
+            return tag
+
+    # Priority 3 — Unicode script heuristic (uses pre-compiled patterns)
+    if _SCRIPT_RE["te"].search(user_msg):
+        return "te"
+    if _SCRIPT_RE["hi"].search(user_msg):
+        return "hi"
+    if _SCRIPT_RE["kn"].search(user_msg):
+        return "kn"
+    if _SCRIPT_RE["ta"].search(user_msg):
+        return "ta"
+
+    # Priority 4 — default
+    return "en"
+
+
+def _execute_guardrail_check(image_bytes: bytes, result: dict) -> dict | None:
+    """
+    Sub-module 2: Apply the HF-space guardrail result filters.
+
+    Returns the cleaned result dict if it should proceed to Groq,
+    or None to signal that the local cascade must be invoked instead.
+    Raises a Flask Response directly for hard 4xx rejections.
+    """
+    from flask import jsonify
+
+    response_data = None
+    if isinstance(result, dict):
+        if "error" in result:
+            response_data = result["error"]
+        elif "label" in result:
+            response_data = result["label"]
+        elif "top_detection" in result and result["top_detection"]:
+            td = result["top_detection"]
+            response_data = td.get("label") if isinstance(td, dict) else td
+    elif isinstance(result, (list, tuple)) and result:
+        response_data = result[0]
+    else:
+        response_data = result
+
+    label = str(response_data).strip().lower() if response_data is not None else ""
+
+    # Confidence extraction
+    conf_val = None
+    if isinstance(result, dict):
+        conf_val = result.get("confidence")
+        if conf_val is None and isinstance(result.get("top_detection"), dict):
+            conf_val = result["top_detection"].get("confidence")
+    try:
+        conf = float(conf_val) if conf_val is not None else 0.0
+    except Exception:
+        conf = None
+
+    # Hotfix gasket
+    if (label == "non_chilli" and conf == 0) or conf is None:
+        return None  # force local cascade with bypass_ood=True
+
+    # Hard out-of-domain rejection
+    if label == "non_chilli":
+        log.warning("out_of_domain_crop")
+        raise _GuardrailReject(
+            jsonify({
+                "error": "Cannot identify crop. Please upload a clear photo of a chilli plant.",
+                "request_id": str(uuid.uuid4())
+            }), 422
+        )
+
+    # Guardrail / phase-3 rejection → push to shadow dataset, fall through to local
+    is_guardrail = (
+        label == "0"
+        or (isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3))
+    )
+    if is_guardrail:
+        _trigger_shadow_save(image_bytes, label="non_chilli", confidence=0, trigger="phase3")
+        log.info("guardrail_rejection_bypass_to_local_cascade")
+        return None
+
+    if isinstance(result, dict) and "error" in result:
+        log.warning("hf_result_error_fallback", extra={"data": {"error_message": result["error"]}})
+        return None
+
+    return result
+
+
+class _GuardrailReject(Exception):
+    """Internal sentinel: carry a Flask response tuple out of _execute_guardrail_check."""
+    def __init__(self, response, status):
+        self.response = response
+        self.status   = status
+
+
+def _compile_groq_payload(
+    result: dict,
+    top: dict | None,
+    is_low: bool,
+    lang: str,
+    user_msg: str,
+    image_bytes: bytes | None,
+) -> str:
+    """
+    Sub-module 3: Compile the Groq context string from the detection result.
+
+    Handles both the success path (top detection found) and the fallback path
+    (no confident detection — triggers questioning mode).
+    """
+    lang_names = {"en": "English", "hi": "Hindi", "te": "Telugu",
+                  "kn": "Kannada", "ta": "Tamil"}
+    low_note_lang_hints = {
+        "en": "not fully certain",
+        "hi": "पूरी तरह से आश्वस्त नहीं",
+        "te": "పూర్తిగా ఖచ్చితంగా తెలియదు",
+        "kn": "ಖಚಿತವಾಗಿಲ್ಲ",
+        "ta": "முழுமையாக உறுதியாக தெரியவில்லை",
+    }
+
+    if top and not result.get("error"):
+        raw_label_name = top.get("raw_label") or top.get("label", "")
+        core_cls = to_core_class(raw_label_name)
+
+        if core_cls:
+            english, telugu_name, kind = detector._get_friendly_name(core_cls)
+            top["raw_label"] = english
+            top["telugu"]    = telugu_name
+            top["label"]     = f"{english} [{telugu_name}]" if telugu_name else english
+            top["type"]      = kind
+
+        label      = top.get("label", "unknown pest")
+        telugu     = top.get("telugu", "")
+        confidence = top.get("confidence", 0)
+        kind       = top.get("type", "pest")
+
+        # Regional translation lookup
+        translated_label = label
+        if core_cls and core_cls in REGIONAL_TRANSLATION_MAP:
+            translated_label = REGIONAL_TRANSLATION_MAP[core_cls].get(
+                lang, REGIONAL_TRANSLATION_MAP[core_cls]["en"]
+            )
+
+        translated_label_clean = strip_cross_contamination(translated_label, lang)
+        label_clean            = strip_cross_contamination(label, lang)
+        telugu_clean           = strip_cross_contamination(telugu, lang)
+        user_msg_clean         = strip_cross_contamination(user_msg, lang)
+
+        target_lang_name = lang_names.get(lang, "English")
+        low_note_hint    = low_note_lang_hints.get(lang, "not fully certain")
+
+        if is_low and image_bytes:
+            _trigger_shadow_save(image_bytes, label=label, confidence=confidence, trigger="low_conf")
+
+        low_note = (
+            f"\nNOTE: This is a low-confidence detection. "
+            f"Mention to the farmer that you are {low_note_hint} and ask one short clarifying question."
+        ) if is_low else ""
+
+        return (
+            f"=== CNN DETECTION RESULT ===\n"
+            f"Detected: {translated_label_clean}\n"
+            f"Type: {kind} | Confidence: {confidence}%\n"
+            f"Farmer described: '{user_msg_clean}'\n"
+            f"INSTRUCTION: Tell the farmer clearly what this {kind} is in simple words in {target_lang_name} "
+            f"(mention the name '{translated_label_clean}' if helpful). "
+            f"Give 2-3 organic solutions with metrics. End with one prevention tip."
+            + low_note
+        )
+    else:
+        # No confident detection — questioning mode
+        err = result.get("error", "") if isinstance(result, dict) else ""
+        if err:
+            log.warning("detector_error", extra={"data": {"error_message": err}})
+        user_msg_clean = strip_cross_contamination(user_msg, lang)
+        return (
+            f"A farmer uploaded a photo of their chilli plant. "
+            f"They described: '{user_msg_clean}'. "
+            f"The AI detector could not identify the problem with confidence. "
+            f"Ask them 2 specific questions about what they can see "
+            f"(colour of affected area, location on plant — leaves/stem/fruit/roots, "
+            f"any insects visible, holes in fruit, webbing, powder, spots etc) "
+            f"then give a diagnosis and 2-3 organic solutions with metrics."
+        )
+
 
 def _detect_inner():
     user_msg    = request.form.get("message", "").strip()
@@ -837,90 +1059,17 @@ def _detect_inner():
                 if get_hf_client() is not None:
                     result = call_hf_detector(image_bytes)
                     
-                    # 1. Gatekeeper strip wrappers
-                    response_data = None
-                    if isinstance(result, dict):
-                        if "error" in result:
-                            response_data = result["error"]
-                        elif "label" in result:
-                            response_data = result["label"]
-                        elif "top_detection" in result and result["top_detection"]:
-                            if isinstance(result["top_detection"], dict):
-                                response_data = result["top_detection"].get("label")
-                            else:
-                                response_data = result["top_detection"]
-                    elif isinstance(result, (list, tuple)) and len(result) > 0:
-                        response_data = result[0]
-                    else:
-                        response_data = result
-
-                    label = str(response_data).strip().lower() if response_data is not None else ""
-                    
-                    # Check confidence score returned by the guardrail
-                    conf_val = None
-                    if isinstance(result, dict):
-                        if "confidence" in result:
-                            conf_val = result["confidence"]
-                        elif "top_detection" in result and isinstance(result["top_detection"], dict):
-                            conf_val = result["top_detection"].get("confidence")
-
+                    # ── Guardrail check (delegated to sub-module 2) ──────────
                     try:
-                        conf = float(conf_val) if conf_val is not None else 0.0
-                    except Exception:
-                        conf = None
-
-                    # Hotfix Gasket to handle the new endpoint structure
-                    is_hotfix_triggered = False
-                    if label == "non_chilli" and conf == 0:
-                        is_hotfix_triggered = True
-                    elif conf is None:
-                        is_hotfix_triggered = True
-
-                    if is_hotfix_triggered:
-                        # Hotfix Gasket to handle the new endpoint structure
-                        if label == "non_chilli" and conf == 0:
-                            label = "chilli"
-                            conf = 1.0
-                            is_low_confidence = False
-                        
-                        # Set to run local cascade with OOD check bypassed
-                        force_bypass_ood = True
-                        result = None
-                    
-                    if result is not None:
-                        # Explicit out-of-domain crop rejection check
-                        if label == "non_chilli":
-                            log.warning("out_of_domain_crop")
-                            return jsonify({
-                                "error": "Cannot identify crop. Please upload a clear photo of a chilli plant.",
-                                "request_id": str(uuid.uuid4())
-                            }), 422
-
-                        is_guardrail_rejection = False
-                        if label == "0":
-                            is_guardrail_rejection = True
-                        if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
-                            is_guardrail_rejection = True
-
-                        if is_guardrail_rejection:
-                            # Data flywheel: non-chilli guardrail image → shadow dataset
-                            _trigger_shadow_save(
-                                image_bytes,
-                                label="non_chilli",
-                                confidence=0,
-                                trigger="phase3",
-                            )
-                            # Nuclear bypass: set result = None to force processing by local Model 2 and Model 3
-                            log.info("guardrail_rejection_bypass_to_local_cascade")
-                            result = None
-
-                        if result and "error" in result:
-                            log.warning("hf_result_error_fallback", extra={"data": {
-                                "error_message": result["error"],
-                            }})
-                            result = None
+                        result = _execute_guardrail_check(image_bytes, result)
+                        if result is None:
+                            force_bypass_ood = True
+                    except _GuardrailReject as gr:
+                        return gr.response, gr.status
                 else:
                     log.warning("hf_client_unavailable_fallback")
+            except _GuardrailReject:
+                raise
             except Exception as exc:
                 log.error("hf_unreachable_fallback", extra={"data": {"error_message": str(exc)}},
                           exc_info=True)
@@ -955,140 +1104,25 @@ def _detect_inner():
         top    = result.get("top_detection") if isinstance(result, dict) else None
         is_low = result.get("low_confidence", False) if isinstance(result, dict) else True
 
-        # Extract language code and fallback to auto-detection
-        lang = (
-            request.headers.get("lang", "").strip().lower()
-            or request.headers.get("Accept-Language", "").strip().lower()
-            or request.form.get("lang", "").strip().lower()
-            or request.args.get("lang", "").strip().lower()
+        # ── Sub-module 1: Resolve language (with early-return fast-path) ───────
+        lang = _resolve_request_language(user_msg)
+
+        # ── Sub-module 3: Compile Groq payload ──────────────────────────────
+        if top is not None:
+            detection = top
+        groq_context = _compile_groq_payload(
+            result=result,
+            top=top,
+            is_low=is_low,
+            lang=lang,
+            user_msg=user_msg,
+            image_bytes=image_bytes if image_file else None,
         )
-        if lang:
-            lang = re.split(r'[-,;]', lang)[0].strip()
-        
-        # Helper to auto-detect if not provided or invalid
-        if not lang or lang not in ["en", "hi", "te", "kn", "ta"]:
-            if re.search(r"[\u0c00-\u0c7f]", user_msg):
-                lang = "te"
-            elif re.search(r"[\u0900-\u097f]", user_msg):
-                lang = "hi"
-            elif re.search(r"[\u0c80-\u0cff]", user_msg):
-                lang = "kn"
-            elif re.search(r"[\u0b80-\u0bff]", user_msg):
-                lang = "ta"
-            else:
-                lang = "en"
-
-        if top and not result.get("error"):
-            # Map raw label or display label to core class
-            raw_label_name = top.get("raw_label") or top.get("label", "")
-            core_cls = to_core_class(raw_label_name)
-            
-            if core_cls:
-                english, telugu_name, kind = detector._get_friendly_name(core_cls)
-                top["raw_label"] = english
-                top["telugu"] = telugu_name
-                top["label"] = f"{english} [{telugu_name}]" if telugu_name else english
-                top["type"] = kind
-
-            label      = top.get("label", "unknown pest")
-            telugu     = top.get("telugu", "")
-            confidence = top.get("confidence", 0)
-            kind       = top.get("type", "pest")
-            detection  = top
-            
-            # Regional translation lookup
-            translated_label = label
-            if core_cls and core_cls in REGIONAL_TRANSLATION_MAP:
-                translated_label = REGIONAL_TRANSLATION_MAP[core_cls].get(lang, REGIONAL_TRANSLATION_MAP[core_cls]["en"])
-            
-            # Clean cross-contamination scripts from labels
-            translated_label_clean = strip_cross_contamination(translated_label, lang)
-            label_clean = strip_cross_contamination(label, lang)
-            telugu_clean = strip_cross_contamination(telugu, lang)
-            user_msg_clean = strip_cross_contamination(user_msg, lang)
-            
-            # Adjust the prompt language instruction and details according to lang
-            lang_names = {
-                "en": "English",
-                "hi": "Hindi",
-                "te": "Telugu",
-                "kn": "Kannada",
-                "ta": "Tamil"
-            }
-            target_lang_name = lang_names.get(lang, "English")
-            
-            # Low confidence note language translation hints
-            low_note_lang_hints = {
-                "en": "not fully certain",
-                "hi": "पूरी तरह से आश्वस्त नहीं",
-                "te": "పూర్తిగా ఖచ్చితంగా తెలియదు",
-                "kn": "ಖಚಿತವಾಗಿಲ್ಲ",
-                "ta": "முழுமையாக உறுதியாக தெரியவில்லை"
-            }
-            low_note_hint = low_note_lang_hints.get(lang, "not fully certain")
-            
-            # Data flywheel: low-confidence detections → shadow dataset for review
-            if is_low:
-                _trigger_shadow_save(
-                    image_bytes,
-                    label=label,
-                    confidence=confidence,
-                    trigger="low_conf",
-                )
-            low_note   = (
-                f"\nNOTE: This is a low-confidence detection. "
-                f"Mention to the farmer that you are {low_note_hint} and ask one short clarifying question."
-            ) if is_low else ""
-            
-            groq_context = (
-                f"=== CNN DETECTION RESULT ===\n"
-                f"Detected: {translated_label_clean}\n"
-                f"Type: {kind} | Confidence: {confidence}%\n"
-                f"Farmer described: '{user_msg_clean}'\n"
-                f"INSTRUCTION: Tell the farmer clearly what this {kind} is in simple words in {target_lang_name} "
-                f"(mention the name '{translated_label_clean}' if helpful). "
-                f"Give 2-3 organic solutions with metrics. End with one prevention tip."
-                + low_note
-            )
-        else:
-            # No detection at all — fall back to questioning
-            is_low = True
-            err = result.get("error", "") if isinstance(result, dict) else ""
-            if err:
-                log.warning("detector_error", extra={"data": {"error_message": err}})
-            
-            user_msg_clean = strip_cross_contamination(user_msg, lang)
-            groq_context = (
-                f"A farmer uploaded a photo of their chilli plant. "
-                f"They described: '{user_msg_clean}'. "
-                f"The AI detector could not identify the problem with confidence. "
-                f"Ask them 2 specific questions about what they can see "
-                f"(colour of affected area, location on plant — leaves/stem/fruit/roots, "
-                f"any insects visible, holes in fruit, webbing, powder, spots etc) "
-                f"then give a diagnosis and 2-3 organic solutions with metrics."
-            )
+        if top:
+            is_low = result.get("low_confidence", False)
     else:
-        # Determine lang for chat/fallback path
-        lang = (
-            request.headers.get("lang", "").strip().lower()
-            or request.headers.get("Accept-Language", "").strip().lower()
-            or request.form.get("lang", "").strip().lower()
-            or request.args.get("lang", "").strip().lower()
-        )
-        if lang:
-            lang = re.split(r'[-,;]', lang)[0].strip()
-        if not lang or lang not in ["en", "hi", "te", "kn", "ta"]:
-            if re.search(r"[\u0c00-\u0c7f]", user_msg):
-                lang = "te"
-            elif re.search(r"[\u0900-\u097f]", user_msg):
-                lang = "hi"
-            elif re.search(r"[\u0c80-\u0cff]", user_msg):
-                lang = "kn"
-            elif re.search(r"[\u0b80-\u0bff]", user_msg):
-                lang = "ta"
-            else:
-                lang = "en"
-        
+        # No image — text-only chat-fallback path
+        lang = _resolve_request_language(user_msg)
         user_msg_clean = strip_cross_contamination(user_msg, lang)
         groq_context = (
             f"A farmer uploaded a photo of their chilli plant. "
@@ -1099,14 +1133,7 @@ def _detect_inner():
 
     # ── Stream Groq response via SSE ──────────────────────────────────────────
     system_content = strip_cross_contamination(SYSTEM_PROMPT, lang)
-    lang_instruction_map = {
-        "en": "\nIMPORTANT: You must respond in English.",
-        "hi": "\nIMPORTANT: You must respond in Hindi (हिंदी).",
-        "te": "\nIMPORTANT: You must respond in Telugu (తెలుగు).",
-        "kn": "\nIMPORTANT: You must respond in Kannada (ಕನ್ನಡ).",
-        "ta": "\nIMPORTANT: You must respond in Tamil (தமிழ்)."
-    }
-    system_content += lang_instruction_map.get(lang, "\nIMPORTANT: You must respond in English.")
+    system_content += _LANG_INSTRUCTION_MAP.get(lang, "\nIMPORTANT: You must respond in English.")
     system_content = strip_cross_contamination(system_content, lang)
 
     messages = [{"role": "system", "content": system_content}] + history + [{"role": "user", "content": groq_context}]

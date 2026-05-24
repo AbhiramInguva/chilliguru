@@ -216,9 +216,8 @@ class ONNXYOLO:
                         all_confidences.append(float(confidences[i]))
                         all_class_ids.append(int(class_ids[i]))
                         
-                del tile_array
-                gc.collect()
-                        
+                del tile_array  # release tile ref; runtime GC handles collection
+
             # Apply NMS on all gathered predictions
             keep = _spatial_nms(all_boxes, all_confidences, iou_threshold=0.45)
             
@@ -719,11 +718,10 @@ def _sev(c):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _detect_source(source, bypass_ood=False):
-    try:
-        return _detect_source_impl(source, bypass_ood=bypass_ood)
-    finally:
-        import gc
-        gc.collect()
+    # Direct delegation — no blocking gc.collect() on the hot request path.
+    # The runtime GC threshold matrix (set in app.py at startup) handles
+    # progressive collection without pausing individual inference requests.
+    return _detect_source_impl(source, bypass_ood=bypass_ood)
 
 def _detect_source_impl(source, bypass_ood=False):
     """
