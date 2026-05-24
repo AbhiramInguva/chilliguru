@@ -216,6 +216,92 @@ class TestFieldScenarios(unittest.TestCase):
             self.assertEqual(detection_data["telugu"], "పిండి పురుగు")
             self.assertEqual(detection_data["raw_label"], "Mealybugs")
 
+    def test_strip_cross_contamination_filters_correctly(self):
+        """
+        Verify that strip_cross_contamination removes cross-contamination scripts.
+        """
+        raw_text = "Aphids [పేను పురుగు] (माहू)"
+        
+        # In English, strip both Telugu and Hindi scripts/brackets
+        eng_clean = app.strip_cross_contamination(raw_text, "en")
+        self.assertEqual(eng_clean, "Aphids")
+        
+        # In Hindi, strip Telugu scripts/brackets, keep Hindi
+        hi_clean = app.strip_cross_contamination(raw_text, "hi")
+        self.assertIn("माहू", hi_clean)
+        self.assertNotIn("పేను పురుగు", hi_clean)
+
+        # In Telugu, strip Hindi scripts, keep Telugu
+        te_clean = app.strip_cross_contamination(raw_text, "te")
+        self.assertIn("పేను పురుగు", te_clean)
+        self.assertNotIn("माहू", te_clean)
+
+    @patch("app.get_hf_client")
+    @patch("app._cb_is_open")
+    @patch("app.detector.detect_from_memory")
+    def test_pan_india_regional_translations_in_detect(self, mock_detect_local, mock_cb, mock_get_client):
+        """
+        Verify that /detect uses regional translation maps to clean cross-contamination.
+        """
+        mock_cb.return_value = False
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        
+        # Mock HF space to return Pest-Myzus persicae (Aphids)
+        mock_client.predict.return_value = {
+            "success": True,
+            "low_confidence": False,
+            "is_low_confidence": False,
+            "top_detection": {
+                "label": "Pest-Myzus persicae (Aphids)",
+                "telugu": "పేను పురుగు",
+                "confidence": 90.0,
+                "type": "pest",
+                "raw_label": "Pest-Myzus persicae (Aphids)"
+            },
+            "all_detections": [
+                {
+                    "label": "Pest-Myzus persicae (Aphids)",
+                    "telugu": "పేను పురుగు",
+                    "confidence": 90.0,
+                    "type": "pest",
+                    "raw_label": "Pest-Myzus persicae (Aphids)"
+                }
+            ]
+        }
+        
+        # Mock Groq client
+        with patch("app.get_client") as mock_groq:
+            mock_comp = MagicMock()
+            mock_groq.return_value.chat.completions.create.return_value = [mock_comp]
+            mock_comp.choices = [MagicMock()]
+            mock_comp.choices[0].delta.content = "Advisory response"
+            
+            # Send Hindi requested language parameter
+            data = {
+                "image": (io.BytesIO(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00"), "aphid_test.jpg"),
+                "message": "पौधे पर कीड़े हैं", # Hindi message
+                "lang": "hi"
+            }
+            
+            response = self.client.post("/detect", data=data, content_type="multipart/form-data")
+            self.assertEqual(response.status_code, 200)
+            
+            # Consume the SSE streaming response to invoke the generator logic
+            _ = list(response.response)
+            
+            # Assert that the created message system and user prompts to Groq are correct and cleanly isolated to Hindi
+            args, kwargs = mock_groq.return_value.chat.completions.create.call_args
+            messages = kwargs.get("messages", [])
+            system_msg = next(m["content"] for m in messages if m["role"] == "system")
+            user_msg = next(m["content"] for m in messages if m["role"] == "user")
+            
+            # Should have Hindi instructions and no Telugu script cross-contamination
+            self.assertIn("IMPORTANT: You must respond in Hindi", system_msg)
+            self.assertNotIn("పేను పురుగు", system_msg)
+            self.assertNotIn("పేను పురుగు", user_msg)
+            self.assertIn("Detected: माहू (एफिड्स)", user_msg)
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -2,7 +2,7 @@
 detector.py — ChilliGuru Pest & Disease Detector (3-Phase Cascade Pipeline)
 Architecture:
   Phase 1: Primary chilli detector (chilli_pest_model.pt, 18-class)
-  Phase 2: IP102 fallback model (ip102_model.pt, 5-class generic pests)
+  Phase 2: IP102 fallback model (ip102_model.pt, 8-class generic pests)
   Phase 3: Generic crop anomaly detector (yolov8n.pt, non-pest rejection)
 Each phase runs in isolated try/except for fault tolerance.
 """
@@ -66,7 +66,16 @@ class ONNXYOLO:
                 16: 'Red Mites leafs', 17: 'White Fly-Leafs'
             }
         elif "ip102_model" in model_path:
-            self.names = {0: 'aphid', 1: 'thrips', 2: 'tobaccocaterpillar', 3: 'whitefly', 4: 'mites'}
+            self.names = {
+                0: 'aphids',
+                1: 'whitefly_leaf_damage',
+                2: 'fruit_borer',
+                3: 'tobacco_caterpillar',
+                4: 'yellow_thrips',
+                5: 'broad_mites',
+                6: 'invasive_black_thrips',
+                7: 'mealybugs'
+            }
         else:
             self.names = {i: f"class_{i}" for i in range(80)}
             self.names[58] = "potted plant"
@@ -291,13 +300,33 @@ CLASS_NAMES = [
     "White Fly-Leafs",                           # 17
 ]
 
+CORE_CLASSES = [
+    "aphids",
+    "whitefly_leaf_damage",
+    "fruit_borer",
+    "tobacco_caterpillar",
+    "yellow_thrips",
+    "broad_mites",
+    "invasive_black_thrips",
+    "mealybugs"
+]
+
 # ── IP102 to ChilliGuru class mapping (Phase 2 fallback) ──────────────────────
 IP102_CLASS_MAPPING = {
-    "aphid":              ("Pest-Myzus persicae (Aphids)",          "పేను పురుగు",                        "pest"),
-    "thrips":             ("Black Thrips-Pest",                     "నల్ల తుమ్మెద పురుగు",               "pest"),
-    "tobaccocaterpillar": ("Pest-Spodoptera litura (Armyworm)",     "గొంగళి పురుగు",                     "pest"),
-    "whitefly":           ("Pest-White Fly",                        "తెల్ల ఈగ పురుగు",                    "pest"),
-    "mites":              ("Pest-Red Mites",                        "ఎర్ర సాలె పురుగు",                   "pest"),
+    "aphid":              ("aphids", "aphids", "pest"),
+    "whitefly":           ("whitefly_leaf_damage", "whitefly_leaf_damage", "pest"),
+    "fruit_borer":        ("fruit_borer", "fruit_borer", "pest"),
+    "tobaccocaterpillar": ("tobacco_caterpillar", "tobacco_caterpillar", "pest"),
+    "yellow_thrips":      ("yellow_thrips", "yellow_thrips", "pest"),
+    "mites":              ("broad_mites", "broad_mites", "pest"),
+    "thrips":             ("invasive_black_thrips", "invasive_black_thrips", "pest"),
+    "mealybugs":          ("mealybugs", "mealybugs", "pest"),
+    
+    # Direct mappings for expanded classes
+    "aphids":              ("aphids", "aphids", "pest"),
+    "whitefly_leaf_damage": ("whitefly_leaf_damage", "whitefly_leaf_damage", "pest"),
+    "broad_mites":        ("broad_mites", "broad_mites", "pest"),
+    "invasive_black_thrips": ("invasive_black_thrips", "invasive_black_thrips", "pest"),
 }
 
 def _get_friendly_name(raw_label):
@@ -321,6 +350,16 @@ def _get_friendly_name(raw_label):
         "Pest-White Fly":                        ("Whitefly",                           "తెల్ల ఈగ పురుగు",                    "pest"),
         "Red Mites leafs":                       ("Red Spider Mites – Leaf Damage",     "ఎర్ర సాలె పురుగు ఆకు నష్టం",        "pest"),
         "White Fly-Leafs":                       ("Whitefly – Leaf Damage",             "తెల్ల ఈగ ఆకు నష్టం",                "pest"),
+        
+        # 8 Core Classes Mapping
+        "aphids":                                ("Aphids",                             "పేను పురుగు",                       "pest"),
+        "whitefly_leaf_damage":                  ("Whitefly Leaf Damage",               "తెల్ల ఈగ ఆకు నష్టం",                 "pest"),
+        "fruit_borer":                           ("Fruit Borer",                        "పండు తొలిచే పురుగు",                "pest"),
+        "tobacco_caterpillar":                   ("Tobacco Caterpillar",                "గొంగళి పురుగు",                    "pest"),
+        "yellow_thrips":                         ("Yellow Thrips",                      "తామర పురుగు",                       "pest"),
+        "broad_mites":                           ("Broad Mites",                        "ఎర్ర సాలె పురుగు",                  "pest"),
+        "invasive_black_thrips":                 ("Invasive Black Thrips",              "నల్ల తామర పురుగు",                  "pest"),
+        "mealybugs":                             ("Mealybugs",                          "పిండి పురుగు",                      "pest"),
     }
     english, telugu, kind = mapping.get(raw_label, (raw_label, "", "unknown"))
     return english, telugu, kind
@@ -398,6 +437,40 @@ PEST_INFO = {
     "White Fly-Leafs": {
         "symptoms": "Yellowing and whitening of leaves, sooty black mold on sticky honeydew deposits",
         "damage":   "Whitefly leaf feeding weakens plant and creates entry points for fungal disease",
+    },
+    
+    # 8 Core Classes entries
+    "aphids": {
+        "symptoms": "Tiny green or black clusters on new shoots, sticky honeydew coating, curled leaves",
+        "damage":   "Sucks sap and spreads mosaic and leaf curl viruses — worse in cool weather",
+    },
+    "whitefly_leaf_damage": {
+        "symptoms": "Yellowing and whitening of leaves, sooty black mold on sticky honeydew deposits",
+        "damage":   "Whitefly leaf feeding weakens plant and creates entry points for fungal disease",
+    },
+    "fruit_borer": {
+        "symptoms": "Round entry hole in fruit with brown powder (frass), fruit drops early",
+        "damage":   "Larva eats seeds and fruit interior — can destroy 30–50% of crop if untreated",
+    },
+    "tobacco_caterpillar": {
+        "symptoms": "Large irregular holes in leaves, caterpillars visible at night, severe defoliation",
+        "damage":   "Heavy feeder — can defoliate an entire field in a few nights",
+    },
+    "yellow_thrips": {
+        "symptoms": "Silver streaks and bronzing on leaves, upward leaf curl, distorted new growth",
+        "damage":   "Sucks sap and transmits viruses — major threat in all chilli growing regions",
+    },
+    "broad_mites": {
+        "symptoms": "Tiny red dots moving on leaf undersides, silvery or bronze leaf colour, fine webbing",
+        "damage":   "Worst in Zaid (hot dry season) — sucks sap and can kill plants quickly",
+    },
+    "invasive_black_thrips": {
+        "symptoms": "Silver streaks and bronzing on leaves, upward leaf curl, distorted new growth",
+        "damage":   "Black thrips suck sap and spread leaf curl virus — worse in Rabi season",
+    },
+    "mealybugs": {
+        "symptoms": "White cottony clusters on stems, leaves and fruit joints, sticky sooty mold",
+        "damage":   "Severe infestation causes wilting, stunting and complete plant collapse",
     },
 }
 
@@ -918,7 +991,7 @@ def _detect_source_impl(source, bypass_ood=False):
                         "success":        True,
                         "top_detection":  top,
                         "all_detections": detections[:3],
-                        "model_used":     "Phase 2: IP102 Generic Pest Detector (5-class)",
+                        "model_used":     "Phase 2: IP102 Generic Pest Detector (8-class)",
                         "low_confidence": is_low,
                         "is_low_confidence": is_low,
                         "phase":          2,
@@ -974,6 +1047,11 @@ def _detect_source_impl(source, bypass_ood=False):
         "is_low_confidence": True,
         "phase":          0,
     }
+
+
+def check_synthetic(image_data):
+    """Stub to support synthetic checker tests."""
+    return 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────

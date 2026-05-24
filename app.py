@@ -36,6 +36,126 @@ logging.root.setLevel(logging.INFO)
 logging.root.handlers = [_handler]
 log = logging.getLogger("chilliguru")
 
+CORE_CLASSES = [
+    "aphids",
+    "whitefly_leaf_damage",
+    "fruit_borer",
+    "tobacco_caterpillar",
+    "yellow_thrips",
+    "broad_mites",
+    "invasive_black_thrips",
+    "mealybugs"
+]
+
+REGIONAL_TRANSLATION_MAP = {
+    "aphids": {
+        "en": "Aphids",
+        "hi": "माहू (एफिड्स)",
+        "te": "పేను పురుగు",
+        "kn": "ಸೇಬು ಜೇನು ನೊಣ (ಅಫಿಡ್ಸ್)",
+        "ta": "அசுவினி"
+    },
+    "whitefly_leaf_damage": {
+        "en": "Whitefly Leaf Damage",
+        "hi": "सफेद मक्खी का नुकसान",
+        "te": "తెల్ల ఈగ ఆకు నష్టం",
+        "kn": "ಬಿಳಿ ನೊಣದ ಎಲೆ ಹಾನಿ",
+        "ta": "வெள்ளை ஈ இலை சேதம்"
+    },
+    "fruit_borer": {
+        "en": "Fruit Borer",
+        "hi": "फल छेदक",
+        "te": "పండు తొలిచే పురుగు",
+        "kn": "ಕಾಯಿ ಕೊರಕ",
+        "ta": "காய்ப்புழு"
+    },
+    "tobacco_caterpillar": {
+        "en": "Tobacco Caterpillar",
+        "hi": "तंबाकू की इल्ली",
+        "te": "పొగాకు లద్దె పురుగు",
+        "kn": "ತಂಬಾಕು ಪತಂಗ",
+        "ta": "புகையிலை வெட்டுப்புழு"
+    },
+    "yellow_thrips": {
+        "en": "Yellow Thrips",
+        "hi": "पीला थ्रिप्स",
+        "te": "పసుపు తామర పురుగు",
+        "kn": "ಹಳದಿ ನುಸಿ",
+        "ta": "மஞ்சள் இலைப்பேன்"
+    },
+    "broad_mites": {
+        "en": "Broad Mites",
+        "hi": "चौड़ी मक्खियाँ (माइट्स)",
+        "te": "ఎర్ర నల్లి / తామర పురుగు",
+        "kn": "ಅಗಲವಾದ ನುಸಿ",
+        "ta": "பரந்த சிலந்திப் பேன்"
+    },
+    "invasive_black_thrips": {
+        "en": "Invasive Black Thrips",
+        "hi": "आक्रामक काला थ्रिप्स",
+        "te": "నల్ల తామర పురుగు",
+        "kn": "ಆಕ್ರಮಣಕಾರಿ ಕಪ್ಪು ನುಸಿ",
+        "ta": "ஊடுరుவும் கருப்பு இலைப்பேன்"
+    },
+    "mealybugs": {
+        "en": "Mealybugs",
+        "hi": "मीलीबग",
+        "te": "पिండి పురుగు",
+        "kn": "ಹಿಟ್ಟು ತಿగಣೆ",
+        "ta": "மாவுப்பூச்சி"
+    }
+}
+
+def to_core_class(label_or_name):
+    if not label_or_name:
+        return None
+    lbl = str(label_or_name).lower()
+    if "black thrips" in lbl or "invasive" in lbl:
+        return "invasive_black_thrips"
+    if "yellow thrips" in lbl:
+        return "yellow_thrips"
+    if "thrips" in lbl:
+        return "invasive_black_thrips"
+    if "aphid" in lbl:
+        return "aphids"
+    if "white fly" in lbl or "whitefly" in lbl:
+        return "whitefly_leaf_damage"
+    if "fruit borer" in lbl or "helicoverpa" in lbl or "borer" in lbl:
+        return "fruit_borer"
+    if "armyworm" in lbl or "tobaccocaterpillar" in lbl or "tobacco_caterpillar" in lbl or "spodoptera" in lbl:
+        return "tobacco_caterpillar"
+    if "red mites" in lbl or "broad mites" in lbl or "broad_mites" in lbl or "mites" in lbl:
+        return "broad_mites"
+    if "mealybug" in lbl:
+        return "mealybugs"
+    return None
+
+def strip_cross_contamination(text, target_lang):
+    if not isinstance(text, str):
+        return text
+    
+    scripts = {
+        "hi": r"[\u0900-\u097f]",
+        "te": r"[\u0c00-\u0c7f]",
+        "kn": r"[\u0c80-\u0cff]",
+        "ta": r"[\u0b80-\u0bff]"
+    }
+    
+    if target_lang == "en":
+        text = re.sub(r"\s*\[[^\]]*\]", "", text)
+        for lang_code, pattern in scripts.items():
+            text = re.sub(pattern, "", text)
+    else:
+        for lang_code, pattern in scripts.items():
+            if lang_code != target_lang:
+                text = re.sub(pattern, "", text)
+        text = re.sub(r"\s*\[\s*\]", "", text)
+    
+    text = re.sub(r"\s*\(\s*\)", "", text)
+    text = re.sub(r"\s*\[\s*\]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
 MODEL          = "llama-3.3-70b-versatile"
 MAX_TOKENS     = 1200
 MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB hard limit
@@ -208,6 +328,7 @@ def call_hf_detector(image_bytes):
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
+
 def _groq_stream_generator(messages, detection, is_low):
     """
     SSE generator for the /detect streaming response.
@@ -349,8 +470,35 @@ def chat():
         history = data.get("history", [])
         if not message:
             return jsonify({"error": "No message"}), 400
+        lang = data.get("lang", "").strip().lower() if "lang" in data else ""
+        if lang:
+            lang = lang.split("-")[0]
+        if not lang or lang not in ["en", "hi", "te", "kn", "ta"]:
+            if re.search(r"[\u0c00-\u0c7f]", message):
+                lang = "te"
+            elif re.search(r"[\u0900-\u097f]", message):
+                lang = "hi"
+            elif re.search(r"[\u0c80-\u0cff]", message):
+                lang = "kn"
+            elif re.search(r"[\u0b80-\u0bff]", message):
+                lang = "ta"
+            else:
+                lang = "en"
+        
+        system_content = strip_cross_contamination(SYSTEM_PROMPT, lang)
+        lang_instruction_map = {
+            "en": "\nIMPORTANT: You must respond in English.",
+            "hi": "\nIMPORTANT: You must respond in Hindi (हिंदी).",
+            "te": "\nIMPORTANT: You must respond in Telugu (తెలుగు).",
+            "kn": "\nIMPORTANT: You must respond in Kannada (ಕನ್ನಡ).",
+            "ta": "\nIMPORTANT: You must respond in Tamil (தமிழ்)."
+        }
+        system_content += lang_instruction_map.get(lang, "\nIMPORTANT: You must respond in English.")
+        system_content = strip_cross_contamination(system_content, lang)
+        
+        message_clean = strip_cross_contamination(message, lang)
         try:
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": message}]
+            messages = [{"role": "system", "content": system_content}] + history + [{"role": "user", "content": message_clean}]
             response = get_client().chat.completions.create(model=MODEL, messages=messages, max_tokens=MAX_TOKENS, temperature=0.7)
             return jsonify({"reply": response.choices[0].message.content.strip()})
         except Exception as e:
@@ -366,9 +514,10 @@ def detect():
     try:
         try:
             resp = _detect_inner()
+            status_code = resp[1] if isinstance(resp, tuple) else resp.status_code
             log.info("detect_complete", extra={"data": {
                 "duration_ms": round((time.time() - _t0) * 1000),
-                "status_code": resp.status_code,
+                "status_code": status_code,
             }})
             return resp
         except Exception as e:
@@ -405,7 +554,10 @@ def _detect_inner():
         image_file.seek(0)
         if file_size > MAX_IMAGE_BYTES:
             log.warning("payload_too_large", extra={"data": {"size_bytes": file_size}})
-            return jsonify({"error": "Image exceeds the 5 MB size limit"}), 413
+            return jsonify({
+                "error": "Payload too large",
+                "request_id": str(uuid.uuid4())
+            }), 413
 
         # ── Magic-byte type verification (first 12 bytes only) ────────────────
         header = image_file.read(12)
@@ -486,9 +638,16 @@ def _detect_inner():
                         result = None
                     
                     if result is not None:
-                        # Process as normal if not overridden
+                        # Explicit out-of-domain crop rejection check
+                        if label == "non_chilli":
+                            log.warning("out_of_domain_crop")
+                            return jsonify({
+                                "error": "Cannot identify crop. Please upload a clear photo of a chilli plant.",
+                                "request_id": str(uuid.uuid4())
+                            }), 422
+
                         is_guardrail_rejection = False
-                        if "non_chilli" in label or label == "0":
+                        if label == "0":
                             is_guardrail_rejection = True
                         if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
                             is_guardrail_rejection = True
@@ -546,13 +705,73 @@ def _detect_inner():
         top    = result.get("top_detection") if isinstance(result, dict) else None
         is_low = result.get("low_confidence", False) if isinstance(result, dict) else True
 
+        # Extract language code and fallback to auto-detection
+        lang = request.form.get("lang", "").strip().lower() or request.args.get("lang", "").strip().lower()
+        if lang:
+            lang = lang.split("-")[0]
+        
+        # Helper to auto-detect if not provided or invalid
+        if not lang or lang not in ["en", "hi", "te", "kn", "ta"]:
+            if re.search(r"[\u0c00-\u0c7f]", user_msg):
+                lang = "te"
+            elif re.search(r"[\u0900-\u097f]", user_msg):
+                lang = "hi"
+            elif re.search(r"[\u0c80-\u0cff]", user_msg):
+                lang = "kn"
+            elif re.search(r"[\u0b80-\u0bff]", user_msg):
+                lang = "ta"
+            else:
+                lang = "en"
+
         if top and not result.get("error"):
-            # Detection present (confident or low-confidence) — give Groq full context
+            # Map raw label or display label to core class
+            raw_label_name = top.get("raw_label") or top.get("label", "")
+            core_cls = to_core_class(raw_label_name)
+            
+            if core_cls:
+                english, telugu_name, kind = detector._get_friendly_name(core_cls)
+                top["raw_label"] = english
+                top["telugu"] = telugu_name
+                top["label"] = f"{english} [{telugu_name}]" if telugu_name else english
+                top["type"] = kind
+
             label      = top.get("label", "unknown pest")
             telugu     = top.get("telugu", "")
             confidence = top.get("confidence", 0)
             kind       = top.get("type", "pest")
             detection  = top
+            
+            # Regional translation lookup
+            translated_label = label
+            if core_cls and core_cls in REGIONAL_TRANSLATION_MAP:
+                translated_label = REGIONAL_TRANSLATION_MAP[core_cls].get(lang, REGIONAL_TRANSLATION_MAP[core_cls]["en"])
+            
+            # Clean cross-contamination scripts from labels
+            translated_label_clean = strip_cross_contamination(translated_label, lang)
+            label_clean = strip_cross_contamination(label, lang)
+            telugu_clean = strip_cross_contamination(telugu, lang)
+            user_msg_clean = strip_cross_contamination(user_msg, lang)
+            
+            # Adjust the prompt language instruction and details according to lang
+            lang_names = {
+                "en": "English",
+                "hi": "Hindi",
+                "te": "Telugu",
+                "kn": "Kannada",
+                "ta": "Tamil"
+            }
+            target_lang_name = lang_names.get(lang, "English")
+            
+            # Low confidence note language translation hints
+            low_note_lang_hints = {
+                "en": "not fully certain",
+                "hi": "पूरी तरह से आश्वस्त नहीं",
+                "te": "పూర్తిగా ఖచ్చితంగా తెలియదు",
+                "kn": "ಖಚಿತವಾಗಿಲ್ಲ",
+                "ta": "முழுமையாக உறுதியாக தெரியவில்லை"
+            }
+            low_note_hint = low_note_lang_hints.get(lang, "not fully certain")
+            
             # Data flywheel: low-confidence detections → shadow dataset for review
             if is_low:
                 _trigger_shadow_save(
@@ -562,16 +781,17 @@ def _detect_inner():
                     trigger="low_conf",
                 )
             low_note   = (
-                "\nNOTE: This is a low-confidence detection. "
-                "Mention to the farmer that you are not fully certain and ask one short clarifying question."
+                f"\nNOTE: This is a low-confidence detection. "
+                f"Mention to the farmer that you are {low_note_hint} and ask one short clarifying question."
             ) if is_low else ""
+            
             groq_context = (
                 f"=== CNN DETECTION RESULT ===\n"
-                f"Detected: {label}" + (f" [{telugu}]" if telugu else "") + f"\n"
+                f"Detected: {translated_label_clean}\n"
                 f"Type: {kind} | Confidence: {confidence}%\n"
-                f"Farmer described: '{user_msg}'\n"
-                f"INSTRUCTION: Tell the farmer clearly what this {kind} is in simple words "
-                f"(mention the Telugu name {telugu} if helpful). "
+                f"Farmer described: '{user_msg_clean}'\n"
+                f"INSTRUCTION: Tell the farmer clearly what this {kind} is in simple words in {target_lang_name} "
+                f"(mention the name '{translated_label_clean}' if helpful). "
                 f"Give 2-3 organic solutions with metrics. End with one prevention tip."
                 + low_note
             )
@@ -581,9 +801,11 @@ def _detect_inner():
             err = result.get("error", "") if isinstance(result, dict) else ""
             if err:
                 log.warning("detector_error", extra={"data": {"error_message": err}})
+            
+            user_msg_clean = strip_cross_contamination(user_msg, lang)
             groq_context = (
                 f"A farmer uploaded a photo of their chilli plant. "
-                f"They described: '{user_msg}'. "
+                f"They described: '{user_msg_clean}'. "
                 f"The AI detector could not identify the problem with confidence. "
                 f"Ask them 2 specific questions about what they can see "
                 f"(colour of affected area, location on plant — leaves/stem/fruit/roots, "
@@ -591,15 +813,43 @@ def _detect_inner():
                 f"then give a diagnosis and 2-3 organic solutions with metrics."
             )
     else:
+        # Determine lang for chat/fallback path
+        lang = request.form.get("lang", "").strip().lower() or request.args.get("lang", "").strip().lower()
+        if lang:
+            lang = lang.split("-")[0]
+        if not lang or lang not in ["en", "hi", "te", "kn", "ta"]:
+            if re.search(r"[\u0c00-\u0c7f]", user_msg):
+                lang = "te"
+            elif re.search(r"[\u0900-\u097f]", user_msg):
+                lang = "hi"
+            elif re.search(r"[\u0c80-\u0cff]", user_msg):
+                lang = "kn"
+            elif re.search(r"[\u0b80-\u0bff]", user_msg):
+                lang = "ta"
+            else:
+                lang = "en"
+        
+        user_msg_clean = strip_cross_contamination(user_msg, lang)
         groq_context = (
             f"A farmer uploaded a photo of their chilli plant. "
-            f"They described: '{user_msg}'. "
+            f"They described: '{user_msg_clean}'. "
             f"Ask them 2 specific questions about what they can see, "
             f"then give a diagnosis and 2-3 organic solutions with metrics."
         )
 
     # ── Stream Groq response via SSE ──────────────────────────────────────────
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": groq_context}]
+    system_content = strip_cross_contamination(SYSTEM_PROMPT, lang)
+    lang_instruction_map = {
+        "en": "\nIMPORTANT: You must respond in English.",
+        "hi": "\nIMPORTANT: You must respond in Hindi (हिंदी).",
+        "te": "\nIMPORTANT: You must respond in Telugu (తెలుగు).",
+        "kn": "\nIMPORTANT: You must respond in Kannada (ಕನ್ನಡ).",
+        "ta": "\nIMPORTANT: You must respond in Tamil (தமிழ்)."
+    }
+    system_content += lang_instruction_map.get(lang, "\nIMPORTANT: You must respond in English.")
+    system_content = strip_cross_contamination(system_content, lang)
+
+    messages = [{"role": "system", "content": system_content}] + history + [{"role": "user", "content": groq_context}]
     return Response(
         stream_with_context(_groq_stream_generator(messages, detection, is_low)),
         mimetype="text/event-stream",
