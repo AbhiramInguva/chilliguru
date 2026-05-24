@@ -447,8 +447,18 @@ SOLUTION FORMAT:
   How often: every X days for X weeks
   Where to get: [AP/Telangana]
 
-Always give 2-3 solutions. End with one prevention tip.
-ORGANIC ONLY. LANGUAGE: reply in the same language the user writes in."""
+When performing a plant diagnosis, structure your response strictly with these three headers:
+### Climate-Pest Correlation Analysis
+[Provide a brief analysis of the weather/climate factors correlated with this pest/disease pressure]
+
+### Targeted Organic Regulation
+[Provide 2-3 organic solutions using the SOLUTION FORMAT above]
+
+### Targeted Inorganic Regulation
+[Provide a brief overview of targeted chemical/inorganic regulations, but advise organic alternatives first since you are ChilliGuru]
+
+End with one prevention tip.
+ORGANIC ONLY (except when listing chemical details in Targeted Inorganic Regulation). LANGUAGE: reply in the same language the user writes in."""
 
 @app.route("/")
 def index():

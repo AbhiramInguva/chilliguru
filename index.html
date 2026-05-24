@@ -642,6 +642,51 @@
     .chat-messages { padding: 20px 16px; }
     .input-area { padding: 12px 16px 20px; }
   }
+
+  /* ── SSE Streaming Advisory Box ─────────────────────────────────────────── */
+  .advisory-stream-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-top: 14px;
+    width: 100%;
+  }
+  .advisory-card {
+    background: rgba(255, 255, 255, 0.75);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 12px;
+    padding: 14px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02);
+    transition: all 0.2s ease;
+    backdrop-filter: blur(10px);
+  }
+  .advisory-card .card-header {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .climate-card .card-header { color: #2980b9; }
+  .organic-card .card-header { color: #27ae60; }
+  .inorganic-card .card-header { color: #c0392b; }
+
+  .advisory-card .card-body {
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: #2c3e50;
+    white-space: pre-wrap;
+  }
+
+  .streaming-cursor::after {
+    content: "▋";
+    animation: blink-cursor 1s step-start infinite;
+    color: var(--text-lt);
+    margin-left: 2px;
+  }
+  @keyframes blink-cursor {
+    50% { opacity: 0; }
+  }
 </style>
 </head>
 <body>
@@ -692,10 +737,11 @@
     <div class="sidebar-section">
       <h3>Language</h3>
       <div class="lang-grid">
-        <button class="lang-btn active" onclick="setLang('en')">English</button>
-        <button class="lang-btn" onclick="setLang('te')">తెలుగు</button>
-        <button class="lang-btn" onclick="setLang('hi')">हिंदी</button>
-        <button class="lang-btn" onclick="setLang('ta')">தமிழ்</button>
+        <button class="lang-btn active" onclick="setLang('en', this)">English</button>
+        <button class="lang-btn" onclick="setLang('te', this)">తెలుగు</button>
+        <button class="lang-btn" onclick="setLang('hi', this)">हिंदी</button>
+        <button class="lang-btn" onclick="setLang('kn', this)">ಕನ್ನಡ</button>
+        <button class="lang-btn" onclick="setLang('ta', this)">தமிழ்</button>
       </div>
     </div>
 
@@ -840,15 +886,62 @@
   const GROQ_API_KEY = ''; // Replace with your key
   let conversation   = [];
   let selectedImage  = null;
-  let currentLang    = 'en';
   let isLoading      = false;
+  let userLat        = null;
+  let userLng        = null;
+
+  function detectUserLanguage() {
+    const userLang = navigator.language || navigator.userLanguage || '';
+    const match = userLang.match(/^([a-z]{2})/i);
+    if (match) {
+      const code = match[1].toLowerCase();
+      if (['en', 'te', 'hi', 'kn', 'ta'].includes(code)) {
+        return code;
+      }
+    }
+    return 'en'; // default fallback
+  }
+
+  let currentLang   = detectUserLanguage();
 
   const LANG_PROMPTS = {
     en: '',
     te: 'Please respond in Telugu (తెలుగు).',
     hi: 'Please respond in Hindi (हिंदी).',
+    kn: 'Please respond in Kannada (ಕನ್ನಡ).',
     ta: 'Please respond in Tamil (தமிழ்).',
   };
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const activeLang = currentLang;
+    const btn = document.querySelector(`.lang-capsule[onclick*="'${activeLang}'"]`) ||
+                document.querySelector(`.lang-btn[onclick*="'${activeLang}'"]`);
+    if (btn) {
+      btn.click();
+    }
+  });
+
+  function captureGeolocation() {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          userLat = position.coords.latitude;
+          userLng = position.coords.longitude;
+          console.log(`Captured high-accuracy location: ${userLat}, ${userLng}`);
+        },
+        (error) => {
+          console.warn("Geolocation access failed or denied:", error);
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 5000,
+          maximumAge: 0
+        }
+      );
+    } else {
+      console.warn("Geolocation not supported by this browser.");
+    }
+  }
 
   const SYSTEM_PROMPT = `You are ChilliGuru, a friendly and helpful farming assistant for chilli farmers in Andhra Pradesh and Telangana. You talk like a trusted friend who knows a lot about farming — simple, warm, and easy to understand. No complicated words.
 
@@ -1005,10 +1098,15 @@ LANGUAGE: reply in the same language the user writes in.`;
       let messageToSend = userText;
       if (langMsg) messageToSend = `${langMsg} ${userText}`;
       if (selectedImage) messageToSend = `[User uploaded a photo of their chilli plant for pest/disease analysis] ${messageToSend}`;
+      if (userLat !== null && userLng !== null) {
+        messageToSend = `[User GPS Location: Latitude ${userLat}, Longitude ${userLng}] ${messageToSend}`;
+      }
 
       const reply = await callGroq(messageToSend);
       removeTyping();
-      addMessage('bot', reply);
+      const msgDiv = addMessage('bot', '');
+      const textDiv = msgDiv.querySelector('.bubble div:last-child');
+      updateStreamingDisplay(textDiv, reply);
     } catch (err) {
       removeTyping();
       addMessage('bot', `Sorry, something went wrong: ${err.message}\n\nPlease check your Groq API key in the code.`);
@@ -1044,6 +1142,9 @@ LANGUAGE: reply in the same language the user writes in.`;
     preview.classList.add('show');
 
     document.getElementById('userInput').placeholder = 'Describe what you see, or press send to auto-analyse...';
+    
+    // Capture high-accuracy Geolocation
+    captureGeolocation();
   }
 
   function removeImage() {
@@ -1054,10 +1155,14 @@ LANGUAGE: reply in the same language the user writes in.`;
   }
 
   // ── Language ───────────────────────────────────────────────────────────────
-  function setLang(lang) {
+  function setLang(lang, btn) {
     currentLang = lang;
     document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
-    event.target.classList.add('active');
+    if (btn) {
+      btn.classList.add('active');
+    } else {
+      event.target.classList.add('active');
+    }
   }
 
   // ── Keyboard & Auto-resize ─────────────────────────────────────────────────
@@ -1071,6 +1176,66 @@ LANGUAGE: reply in the same language the user writes in.`;
   function autoResize(el) {
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  }
+
+  // ── Stream Advisory Parsers ────────────────────────────────────────────────
+  function parseAdvisorySections(text) {
+    let climate = '';
+    let organic = '';
+    let inorganic = '';
+
+    const climateRegex = /(?:Climate-Pest Correlation Analysis|Climate-Pest Correlation)[:\s*#-]*([\s\S]*?)(?=(?:Targeted Organic Regulation|Targeted Organic|Targeted Inorganic|$))/i;
+    const organicRegex = /(?:Targeted Organic Regulation|Targeted Organic)[:\s*#-]*([\s\S]*?)(?=(?:Targeted Inorganic Regulation|Targeted Inorganic|$))/i;
+    const inorganicRegex = /(?:Targeted Inorganic Regulation|Targeted Inorganic)[:\s*#-]*([\s\S]*?)$/i;
+
+    const mClimate = text.match(climateRegex);
+    const mOrganic = text.match(organicRegex);
+    const mInorganic = text.match(inorganicRegex);
+
+    if (mClimate) climate = mClimate[1];
+    if (mOrganic) organic = mOrganic[1];
+    if (mInorganic) inorganic = mInorganic[1];
+
+    const clean = (str) => {
+      if (!str) return '';
+      let cleaned = str.replace(/^[:\s*#-]+/, '').trim();
+      cleaned = cleaned.replace(/[:\s*#-]+$/, '').trim();
+      return cleaned;
+    };
+
+    return {
+      climate: clean(climate),
+      organic: clean(organic),
+      inorganic: clean(inorganic)
+    };
+  }
+
+  function updateStreamingDisplay(textNode, rawText) {
+    const sections = parseAdvisorySections(rawText);
+
+    if (sections.climate || sections.organic || sections.inorganic) {
+      textNode.innerHTML = `
+        <div class="advisory-stream-container">
+          ${sections.climate ? `
+          <div class="advisory-card climate-card">
+            <div class="card-header">🌦️ Climate-Pest Correlation Analysis</div>
+            <div class="card-body">${sections.climate}</div>
+          </div>` : ''}
+          ${sections.organic ? `
+          <div class="advisory-card organic-card">
+            <div class="card-header">🌿 Targeted Organic Regulation</div>
+            <div class="card-body">${sections.organic}</div>
+          </div>` : ''}
+          ${sections.inorganic ? `
+          <div class="advisory-card inorganic-card">
+            <div class="card-header">🧪 Targeted Inorganic Regulation</div>
+            <div class="card-body">${sections.inorganic}</div>
+          </div>` : ''}
+        </div>
+      `;
+    } else {
+      textNode.textContent = rawText;
+    }
   }
 </script>
 </body>

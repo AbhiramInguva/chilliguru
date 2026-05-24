@@ -2,15 +2,62 @@
   const API_BASE = '';
   let conversation  = [];
   let selectedImage = null;
-  let currentLang   = 'en';
   let isLoading     = false;
+  let userLat       = null;
+  let userLng       = null;
+
+  function detectUserLanguage() {
+    const userLang = navigator.language || navigator.userLanguage || '';
+    const match = userLang.match(/^([a-z]{2})/i);
+    if (match) {
+      const code = match[1].toLowerCase();
+      if (['en', 'te', 'hi', 'kn', 'ta'].includes(code)) {
+        return code;
+      }
+    }
+    return 'en'; // default fallback
+  }
+
+  let currentLang   = detectUserLanguage();
 
   const LANG_PROMPTS = {
     en: '',
     te: 'Please respond in Telugu (తెలుగు).',
     hi: 'Please respond in Hindi (हिंदी).',
+    kn: 'Please respond in Kannada (ಕನ್ನಡ).',
     ta: 'Please respond in Tamil (தமிழ்).',
   };
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const activeLang = currentLang;
+    const btn = document.querySelector(`.lang-capsule[onclick*="'${activeLang}'"]`) ||
+                document.querySelector(`.lang-btn[onclick*="'${activeLang}'"]`);
+    if (btn) {
+      btn.click();
+    }
+  });
+
+  function captureGeolocation() {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          userLat = position.coords.latitude;
+          userLng = position.coords.longitude;
+          console.log(`Captured high-accuracy location: ${userLat}, ${userLng}`);
+        },
+        (error) => {
+          console.warn("Geolocation access failed or denied:", error);
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 5000,
+          maximumAge: 0
+        }
+      );
+    } else {
+      console.warn("Geolocation not supported by this browser.");
+    }
+  }
 
   const SYSTEM_PROMPT = `You are ChilliGuru, a friendly and helpful farming assistant for chilli farmers in Andhra Pradesh and Telangana. You talk like a trusted friend who knows a lot about farming — simple, warm, and easy to understand. No complicated words.
 
@@ -256,6 +303,13 @@ LANGUAGE: reply in the same language the user writes in.`;
         form.append('image',   imageToSend);
         form.append('message', userText);
         form.append('history', JSON.stringify(conversation));
+        form.append('lang', currentLang);
+        if (userLat !== null) {
+          form.append('latitude', parseFloat(userLat));
+        }
+        if (userLng !== null) {
+          form.append('longitude', parseFloat(userLng));
+        }
 
         const res = await fetch(`${API_BASE}/detect`, { method: 'POST', body: form });
 
@@ -305,7 +359,7 @@ LANGUAGE: reply in the same language the user writes in.`;
 
               } else if (event.type === 'text' && textNode) {
                 fullText += event.text;
-                textNode.textContent = fullText;
+                updateStreamingDisplay(textNode, fullText);
                 const msgs = document.getElementById('chatMessages');
                 msgs.scrollTop = msgs.scrollHeight;
 
@@ -401,6 +455,9 @@ LANGUAGE: reply in the same language the user writes in.`;
     previewImg.src = URL.createObjectURL(file);
     preview.classList.add('show');
     document.getElementById('userInput').placeholder = 'Describe what you see, or press send to auto-analyse…';
+    
+    // Capture high-accuracy Geolocation
+    captureGeolocation();
   }
 
   function removeImage() {
@@ -469,6 +526,9 @@ LANGUAGE: reply in the same language the user writes in.`;
       document.getElementById('previewName').textContent = 'camera-capture.jpg';
       preview.classList.add('show');
       document.getElementById('userInput').placeholder = 'Describe what you see, or press send to auto-analyse…';
+      
+      // Capture high-accuracy Geolocation
+      captureGeolocation();
     }, 'image/jpeg', 0.85);
   }
 
@@ -479,4 +539,64 @@ LANGUAGE: reply in the same language the user writes in.`;
     }
     document.getElementById('cameraVideo').srcObject = null;
     document.getElementById('cameraModal').classList.remove('show');
+  }
+
+  // ── Stream Advisory Parsers ────────────────────────────────────────────────
+  function parseAdvisorySections(text) {
+    let climate = '';
+    let organic = '';
+    let inorganic = '';
+
+    const climateRegex = /(?:Climate-Pest Correlation Analysis|Climate-Pest Correlation)[:\s*#-]*([\s\S]*?)(?=(?:Targeted Organic Regulation|Targeted Organic|Targeted Inorganic|$))/i;
+    const organicRegex = /(?:Targeted Organic Regulation|Targeted Organic)[:\s*#-]*([\s\S]*?)(?=(?:Targeted Inorganic Regulation|Targeted Inorganic|$))/i;
+    const inorganicRegex = /(?:Targeted Inorganic Regulation|Targeted Inorganic)[:\s*#-]*([\s\S]*?)$/i;
+
+    const mClimate = text.match(climateRegex);
+    const mOrganic = text.match(organicRegex);
+    const mInorganic = text.match(inorganicRegex);
+
+    if (mClimate) climate = mClimate[1];
+    if (mOrganic) organic = mOrganic[1];
+    if (mInorganic) inorganic = mInorganic[1];
+
+    const clean = (str) => {
+      if (!str) return '';
+      let cleaned = str.replace(/^[:\s*#-]+/, '').trim();
+      cleaned = cleaned.replace(/[:\s*#-]+$/, '').trim();
+      return cleaned;
+    };
+
+    return {
+      climate: clean(climate),
+      organic: clean(organic),
+      inorganic: clean(inorganic)
+    };
+  }
+
+  function updateStreamingDisplay(textNode, rawText) {
+    const sections = parseAdvisorySections(rawText);
+
+    if (sections.climate || sections.organic || sections.inorganic) {
+      textNode.innerHTML = `
+        <div class="advisory-stream-container">
+          ${sections.climate ? `
+          <div class="advisory-card climate-card">
+            <div class="card-header">🌦️ Climate-Pest Correlation Analysis</div>
+            <div class="card-body">${sections.climate}</div>
+          </div>` : ''}
+          ${sections.organic ? `
+          <div class="advisory-card organic-card">
+            <div class="card-header">🌿 Targeted Organic Regulation</div>
+            <div class="card-body">${sections.organic}</div>
+          </div>` : ''}
+          ${sections.inorganic ? `
+          <div class="advisory-card inorganic-card">
+            <div class="card-header">🧪 Targeted Inorganic Regulation</div>
+            <div class="card-body">${sections.inorganic}</div>
+          </div>` : ''}
+        </div>
+      `;
+    } else {
+      textNode.textContent = rawText;
+    }
   }
