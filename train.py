@@ -20,32 +20,51 @@ OUTPUT      = "chilli_pest_model.pt"
 DATASET_DIR = Path("dataset")
 
 CHILLI_PESTS = {
-    "Helicoverpa armigera":        "Fruit Borer",
-    "Spodoptera litura":           "Spodoptera Armyworm",
-    "Spodoptera exigua":           "Beet Armyworm",
-    "Leucinodes orbonalis":        "Shoot and Fruit Borer",
-    "Aphis gossypii":              "Aphids",
-    "Myzus persicae":              "Green Peach Aphid",
-    "Bemisia tabaci":              "Whitefly",
-    "Trialeurodes vaporariorum":   "Greenhouse Whitefly",
-    "Scirtothrips dorsalis":       "Chilli Thrips",
-    "Thrips palmi":                "Palm Thrips",
-    "Frankliniella occidentalis":  "Western Flower Thrips",
-    "Tetranychus urticae":         "Spider Mites",
-    "Polyphagotarsonemus latus":   "Broad Mite",
-    "Phenacoccus solenopsis":      "Mealybug",
-    "Planococcus citri":           "Mealybug",
-    "Liriomyza trifolii":          "Leaf Miner",
-    "Agrotis ipsilon":             "Cutworm",
-    # Common IP102 label formats
-    "fruit borer":                 "Fruit Borer",
-    "armyworm":                    "Spodoptera Armyworm",
-    "aphid":                       "Aphids",
-    "whitefly":                    "Whitefly",
-    "thrips":                      "Chilli Thrips",
-    "spider mite":                 "Spider Mites",
-    "mealybug":                    "Mealybug",
-    "leaf miner":                  "Leaf Miner",
+    # Mappings to "aphids"
+    "Aphis gossypii":              "aphids",
+    "Myzus persicae":              "aphids",
+    "Green Peach Aphid":           "aphids",
+    "aphid":                       "aphids",
+    
+    # Mappings to "whitefly_leaf_damage"
+    "Bemisia tabaci":              "whitefly_leaf_damage",
+    "Trialeurodes vaporariorum":   "whitefly_leaf_damage",
+    "Greenhouse Whitefly":         "whitefly_leaf_damage",
+    "whitefly":                    "whitefly_leaf_damage",
+    
+    # Mappings to "fruit_borer"
+    "Helicoverpa armigera":        "fruit_borer",
+    "Leucinodes orbonalis":        "fruit_borer",
+    "Shoot and Fruit Borer":       "fruit_borer",
+    "fruit borer":                 "fruit_borer",
+    
+    # Mappings to "tobacco_caterpillar"
+    "Spodoptera litura":           "tobacco_caterpillar",
+    "Spodoptera exigua":           "tobacco_caterpillar",
+    "Spodoptera Armyworm":         "tobacco_caterpillar",
+    "Beet Armyworm":               "tobacco_caterpillar",
+    "armyworm":                    "tobacco_caterpillar",
+    
+    # Mappings to "yellow_thrips"
+    "Scirtothrips dorsalis":       "yellow_thrips",
+    "Chilli Thrips":               "yellow_thrips",
+    "thrips":                      "yellow_thrips",
+    
+    # Mappings to "broad_mites"
+    "Polyphagotarsonemus latus":   "broad_mites",
+    "Broad Mite":                  "broad_mites",
+    
+    # Mappings to "invasive_black_thrips"
+    "Thrips palmi":                "invasive_black_thrips",
+    "Palm Thrips":                 "invasive_black_thrips",
+    "Frankliniella occidentalis":  "invasive_black_thrips",
+    "Western Flower Thrips":       "invasive_black_thrips",
+    
+    # Mappings to "mealybugs"
+    "Phenacoccus solenopsis":      "mealybugs",
+    "Planococcus citri":           "mealybugs",
+    "Mealybug":                    "mealybugs",
+    "mealybug":                    "mealybugs",
 }
 
 
@@ -136,24 +155,18 @@ def filter_classes():
                 print(f"   Keeping [{idx}] {cls} -> {simple}")
                 break
 
-    if not mapping:
-        print("\n   No exact matches found — keeping ALL classes and training on full dataset.")
-        print("   This will still work well. The model will learn to reject non-chilli pests.")
-        filtered_yaml = DATASET_DIR / "chilli_data.yaml"
-        new_data = {
-            "path":  str(DATASET_DIR.absolute()),
-            "train": str(list(DATASET_DIR.rglob("train/images"))[0]) if list(DATASET_DIR.rglob("train/images")) else "train/images",
-            "val":   str(list(DATASET_DIR.rglob("valid/images"))[0]) if list(DATASET_DIR.rglob("valid/images")) else "valid/images",
-            "nc":    len(orig),
-            "names": orig,
-        }
-        with open(filtered_yaml, "w") as f:
-            yaml.dump(new_data, f, default_flow_style=False)
-        return filtered_yaml, orig
+    NEW_CLASSES = [
+        "aphids",
+        "whitefly_leaf_damage",
+        "fruit_borer",
+        "tobacco_caterpillar",
+        "yellow_thrips",
+        "broad_mites",
+        "invasive_black_thrips",
+        "mealybugs"
+    ]
+    new_idx_map = {name: i for i, name in enumerate(NEW_CLASSES)}
 
-    # Build remapped class list
-    new_classes  = list(dict.fromkeys(mapping.values()))
-    new_idx_map  = {label: i for i, label in enumerate(new_classes)}
     kept = removed = 0
 
     for label_file in DATASET_DIR.rglob("labels/*.txt"):
@@ -176,23 +189,86 @@ def filter_classes():
 
     print(f"\n   Images with chilli pests : {kept}")
     print(f"   Images used as negatives : {removed}")
-    print(f"   Final classes            : {new_classes}")
+    print(f"   Final classes            : {NEW_CLASSES}")
 
     # Find image dirs
     train_imgs = list(DATASET_DIR.rglob("train/images"))
     valid_imgs = list(DATASET_DIR.rglob("valid/images"))
 
-    filtered_yaml = DATASET_DIR / "chilli_data.yaml"
+    filtered_yaml = Path("pan_india_pests.yaml").absolute()
     yaml.dump({
         "path":  str(DATASET_DIR.absolute()),
-        "train": str(train_imgs[0]) if train_imgs else "train/images",
-        "val":   str(valid_imgs[0]) if valid_imgs else "valid/images",
-        "nc":    len(new_classes),
-        "names": new_classes,
+        "train": str(train_imgs[0].relative_to(DATASET_DIR.absolute())) if train_imgs else "train/images",
+        "val":   str(valid_imgs[0].relative_to(DATASET_DIR.absolute())) if valid_imgs else "valid/images",
+        "nc":    len(NEW_CLASSES),
+        "names": NEW_CLASSES,
     }, open(filtered_yaml, "w"), default_flow_style=False)
 
     print(f"   Config saved: {filtered_yaml}")
-    return filtered_yaml, new_classes
+    return filtered_yaml, NEW_CLASSES
+
+
+def validate_negative_anchors(yaml_path):
+    print("\n== STEP 2.5: Validating background negative anchors ==")
+    try:
+        with open(yaml_path) as f:
+            data = yaml.safe_load(f)
+        
+        dataset_path = Path(data.get("path", "."))
+        train_relative = data.get("train", "train/images")
+        
+        train_images_path = Path(train_relative)
+        if not train_images_path.is_absolute():
+            train_images_path = dataset_path / train_images_path
+            
+        if not train_images_path.exists():
+            print(f"   [WARNING] Training image directory {train_images_path} does not exist.")
+            return False
+            
+        valid_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
+        image_files = [f for f in train_images_path.glob("**/*") if f.suffix.lower() in valid_exts]
+        
+        if not image_files:
+            print("   [WARNING] No training images found to validate.")
+            return False
+            
+        total_images = len(image_files)
+        background_count = 0
+        
+        for img_path in image_files:
+            # Construct corresponding label path in YOLO format
+            parts = list(img_path.parts)
+            if "images" in parts:
+                idx = len(parts) - 1 - parts[::-1].index("images")
+                parts[idx] = "labels"
+            label_path = Path(*parts).with_suffix(".txt")
+            
+            if not label_path.exists():
+                background_count += 1
+            else:
+                try:
+                    if label_path.stat().st_size == 0:
+                        background_count += 1
+                    else:
+                        with open(label_path, "r") as lf:
+                            content = lf.read().strip()
+                            if not content:
+                                background_count += 1
+                except Exception:
+                    background_count += 1
+                    
+        pct_background = (background_count / total_images) * 100
+        print(f"   Total training images: {total_images}")
+        print(f"   Background-only images: {background_count} ({pct_background:.2f}%)")
+        
+        if pct_background < 10.0:
+            raise ValueError(f"Hardened pipeline verification failed: negative anchor ratio is {pct_background:.2f}% (required: >= 10.0%)")
+        
+        print("   ✅ Dataset validation successful: background images pool is >= 10.0%")
+        return True
+    except Exception as e:
+        print(f"   ❌ Validation error: {e}")
+        raise e
 
 
 def train(yaml_path, classes):
@@ -252,6 +328,10 @@ def train(yaml_path, classes):
             device   = "mps",
             workers  = 4,
             verbose  = True,
+            cls      = 2.5,
+            box      = 8.5,
+            label_smoothing = 0.1,
+            close_mosaic = 15,
         )
         return True
     except Exception as e:
@@ -265,6 +345,7 @@ def train(yaml_path, classes):
                     data=str(yaml_path), epochs=EPOCHS, imgsz=IMG_SIZE,
                     batch=8, name="chilli_pest", project="runs",
                     patience=15, device="cpu", workers=2, verbose=True,
+                    cls=2.5, box=8.5, label_smoothing=0.1, close_mosaic=15,
                 )
                 return True
             except Exception as e2:
@@ -282,6 +363,33 @@ def save():
     shutil.copy(best, OUTPUT)
     mb = Path(OUTPUT).stat().st_size / (1024 * 1024)
     print(f"Saved: {OUTPUT} ({mb:.1f} MB)")
+
+    # Post-training export to ONNX with INT8 quantization & simplification
+    try:
+        from ultralytics import YOLO
+        print("   Exporting model to ONNX INT8 format...")
+        model = YOLO(OUTPUT)
+        # Run export matching hardcoded CPU runtime paths
+        exported_path_str = model.export(format="onnx", int8=True, simplify=True)
+        exported_path = Path(exported_path_str)
+        
+        dest = Path("weights/chilli_pest_model.onnx")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        
+        if exported_path.exists():
+            shutil.copy(exported_path, dest)
+            print(f"   Saved ONNX model to: {dest} ({dest.stat().st_size / (1024*1024):.2f} MB)")
+        else:
+            # Fallback checks in case of custom filenames
+            onnx_candidates = list(best.parent.glob("*.onnx"))
+            if onnx_candidates:
+                shutil.copy(onnx_candidates[-1], dest)
+                print(f"   Saved ONNX model (fallback) to: {dest}")
+            else:
+                print("   [WARNING] Could not locate exported ONNX file.")
+    except Exception as export_err:
+        print(f"   [ERROR] Failed to export/quantize model to ONNX: {export_err}")
+
     print("\nDone! Run: python3 chilliguru.py")
     return True
 
@@ -303,6 +411,9 @@ if __name__ == "__main__":
     yaml_path, classes = filter_classes()
     if yaml_path is None:
         exit(1)
+
+    # Validate negative anchors pool
+    validate_negative_anchors(yaml_path)
 
     if not train(yaml_path, classes):
         exit(1)

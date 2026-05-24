@@ -1,0 +1,13 @@
+path: /Users/abhiraminguva/Code/PYTHON/chilli/dataset
+train: train/images
+val: valid/images
+nc: 8
+names:
+  0: aphids
+  1: whitefly_leaf_damage
+  2: fruit_borer
+  3: tobacco_caterpillar
+  4: yellow_thrips
+  5: broad_mites
+  6: invasive_black_thrips
+  7: mealybugs
