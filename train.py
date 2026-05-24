@@ -369,24 +369,32 @@ def save():
         from ultralytics import YOLO
         print("   Exporting model to ONNX INT8 format...")
         model = YOLO(OUTPUT)
-        # Run export matching hardcoded CPU runtime paths
-        exported_path_str = model.export(format="onnx", int8=True, simplify=True)
-        exported_path = Path(exported_path_str)
         
         dest = Path("weights/chilli_pest_model.onnx")
         dest.parent.mkdir(parents=True, exist_ok=True)
         
-        if exported_path.exists():
-            shutil.copy(exported_path, dest)
-            print(f"   Saved ONNX model to: {dest} ({dest.stat().st_size / (1024*1024):.2f} MB)")
-        else:
-            # Fallback checks in case of custom filenames
-            onnx_candidates = list(best.parent.glob("*.onnx"))
-            if onnx_candidates:
-                shutil.copy(onnx_candidates[-1], dest)
-                print(f"   Saved ONNX model (fallback) to: {dest}")
+        try:
+            # Attempt direct export
+            exported_path_str = model.export(format="onnx", int8=True, simplify=True)
+            exported_path = Path(exported_path_str)
+            if exported_path.exists():
+                shutil.copy(exported_path, dest)
+                print(f"   Saved ONNX model to: {dest} ({dest.stat().st_size / (1024*1024):.2f} MB)")
             else:
-                print("   [WARNING] Could not locate exported ONNX file.")
+                raise FileNotFoundError("Exported path does not exist")
+        except Exception as direct_err:
+            print(f"   [INFO] Direct ONNX int8 export failed ({direct_err}). Falling back to standard export + ONNX runtime dynamic quantization...")
+            exported_path_str = model.export(format="onnx", simplify=True)
+            exported_path = Path(exported_path_str)
+            
+            from onnxruntime.quantization import quantize_dynamic, QuantType
+            quantize_dynamic(
+                model_input=str(exported_path),
+                model_output=str(dest),
+                weight_type=QuantType.QUInt8
+            )
+            print(f"   Saved ONNX model (dynamic quantized) to: {dest} ({dest.stat().st_size / (1024*1024):.2f} MB)")
+            
     except Exception as export_err:
         print(f"   [ERROR] Failed to export/quantize model to ONNX: {export_err}")
 

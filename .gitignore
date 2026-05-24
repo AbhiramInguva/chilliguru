@@ -11,6 +11,7 @@
 runs/
 wandb/
 datasets/
+dataset/
 kaggle_output/
 
 # Python
