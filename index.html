@@ -687,7 +687,44 @@
   @keyframes blink-cursor {
     50% { opacity: 0; }
   }
+
+  /* ── Map Tab UI ─────────────────────────────────────────────────────────── */
+  .tab-container {
+    display: flex;
+    gap: 8px;
+    padding: 12px 24px;
+    background: var(--white);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .tab-btn {
+    padding: 8px 18px;
+    border-radius: 20px;
+    border: 1.5px solid var(--border);
+    background: var(--cream);
+    color: var(--text-lt);
+    font-family: inherit;
+    font-weight: 500;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .tab-btn:hover  { background: var(--sand); color: var(--text); }
+  .tab-btn.active {
+    background: var(--green);
+    color: var(--white);
+    border-color: var(--green);
+    box-shadow: 0 4px 12px rgba(45,106,79,.25);
+  }
+  .tab-panel { display: none; flex-direction: column; flex: 1; min-height: 0; }
+  .tab-panel.active { display: flex; }
 </style>
+<!-- Leaflet Map -->
+<link  rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 </head>
 <body>
 
@@ -760,63 +797,81 @@
   </aside>
 
   <!-- Main Chat -->
-  <main class="chat-area">
-    <div class="chat-messages" id="chatMessages">
+  <main class="chat-area" style="display:flex;flex-direction:column;">
 
-      <!-- Welcome State -->
-      <div class="welcome" id="welcomeState">
-        <div class="welcome-icon">🌶️</div>
-        <h2>Namaste! I'm ChilliGuru</h2>
-        <p>Your expert farming assistant for Andhra Pradesh & Telangana. Ask me anything about growing chillies — in English, Telugu, or Hindi.</p>
-        <div class="welcome-cards">
-          <div class="welcome-card" onclick="askQuestion('I am a beginner. How do I start growing Teja chilli?')">
-            <div class="wc-icon">🌱</div>
-            <div class="wc-title">Start Growing</div>
-            <div class="wc-desc">Seed to harvest guide</div>
-          </div>
-          <div class="welcome-card" onclick="triggerImageUpload()">
-            <div class="wc-icon">📷</div>
-            <div class="wc-title">Identify Pest</div>
-            <div class="wc-desc">Upload a photo to diagnose</div>
-          </div>
-          <div class="welcome-card" onclick="askQuestion('నా మిరప ఆకులు పసుపు రంగులోకి మారుతున్నాయి — ఎందుకు?')">
-            <div class="wc-icon">🍃</div>
-            <div class="wc-title">తెలుగులో అడగండి</div>
-            <div class="wc-desc">Telugu support</div>
-          </div>
-          <div class="welcome-card" onclick="askQuestion('Best organic spray to prevent pests during Kharif season in Guntur?')">
-            <div class="wc-icon">🌿</div>
-            <div class="wc-title">Organic Solutions</div>
-            <div class="wc-desc">Home-made & shop remedies</div>
+    <!-- ── Tab Switcher ── -->
+    <div class="tab-container">
+      <button class="tab-btn active" id="tab-btn-chat" onclick="switchTab('chat')">📷 Camera Scan Diagnosis</button>
+      <button class="tab-btn"        id="tab-btn-map"  onclick="switchTab('map')">🗺️ Regional Risk Map</button>
+    </div>
+
+    <!-- ── Chat Panel ── -->
+    <div id="chat-tab-panel" class="tab-panel active" style="flex-direction:column;flex:1;min-height:0;">
+      <div class="chat-messages" id="chatMessages" style="flex:1;overflow-y:auto;padding:24px;">
+        <div class="welcome" id="welcomeState">
+          <div class="welcome-icon">🌶️</div>
+          <h2>Namaste! I'm ChilliGuru</h2>
+          <p>Your expert farming assistant for Andhra Pradesh &amp; Telangana. Ask me anything about growing chillies — in English, Telugu, or Hindi.</p>
+          <div class="welcome-cards">
+            <div class="welcome-card" onclick="askQuestion('I am a beginner. How do I start growing Teja chilli?')">
+              <div class="wc-icon">🌱</div>
+              <div class="wc-title">Start Growing</div>
+              <div class="wc-desc">Seed to harvest guide</div>
+            </div>
+            <div class="welcome-card" onclick="triggerImageUpload()">
+              <div class="wc-icon">📷</div>
+              <div class="wc-title">Identify Pest</div>
+              <div class="wc-desc">Upload a photo to diagnose</div>
+            </div>
+            <div class="welcome-card" onclick="askQuestion('నా మిరప ఆకులు పసుపు రంగులోకి మారుతున్నాయి — ఎందుకు?')">
+              <div class="wc-icon">🍃</div>
+              <div class="wc-title">తెలుగులో అడగండి</div>
+              <div class="wc-desc">Telugu support</div>
+            </div>
+            <div class="welcome-card" onclick="askQuestion('Best organic spray to prevent pests during Kharif season in Guntur?')">
+              <div class="wc-icon">🌿</div>
+              <div class="wc-title">Organic Solutions</div>
+              <div class="wc-desc">Home-made &amp; shop remedies</div>
+            </div>
           </div>
         </div>
       </div>
 
-    </div>
-
-    <!-- Image Preview -->
-    <div class="image-preview" id="imagePreview">
-      <img class="preview-img" id="previewImg" src="" alt="">
-      <span id="previewName">photo.jpg</span>
-      <span class="remove-img" onclick="removeImage()">✕</span>
-    </div>
-
-    <!-- Input Area -->
-    <div class="input-area">
-      <div class="input-box">
-        <textarea
-          id="userInput"
-          placeholder="Ask about your chilli crop... or upload a photo 📷"
-          rows="1"
-          onkeydown="handleKey(event)"
-          oninput="autoResize(this)"
-        ></textarea>
-        <div class="input-actions">
-          <button class="img-btn" onclick="triggerImageUpload()" title="Upload plant photo">📷</button>
-          <button class="send-btn" id="sendBtn" onclick="sendMessage()">➤</button>
-        </div>
+      <div class="image-preview" id="imagePreview">
+        <img class="preview-img" id="previewImg" src="" alt="">
+        <span id="previewName">photo.jpg</span>
+        <span class="remove-img" onclick="removeImage()">✕</span>
       </div>
-      <div class="input-hint">Upload a photo of your plant for AI pest detection • Organic solutions only</div>
+
+      <div class="input-area">
+        <div class="input-box">
+          <textarea id="userInput" placeholder="Ask about your chilli crop... or upload a photo 📷"
+            rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+          <div class="input-actions">
+            <button class="img-btn" onclick="triggerImageUpload()" title="Upload plant photo">📷</button>
+            <button class="send-btn" id="sendBtn" onclick="sendMessage()">➤</button>
+          </div>
+        </div>
+        <div class="input-hint">Upload a photo of your plant for AI pest detection • Organic solutions only</div>
+      </div>
+    </div>
+
+    <!-- ── Map Panel ── -->
+    <div id="map-tab-panel" class="tab-panel" style="flex-direction:column;flex:1;min-height:0;padding:24px;overflow-y:auto;">
+      <div style="background:var(--white);border-radius:16px;border:1px solid var(--border);padding:20px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h2 style="font-family:'Fraunces',serif;font-size:1.5rem;color:var(--green);margin:0;">Regional Climate &amp; Pest Risk</h2>
+          <span style="font-size:0.82rem;color:var(--text-lt);" id="map-location-status">Detecting coordinates…</span>
+        </div>
+        <div id="regional-pest-map" style="height:450px;border-radius:12px;z-index:1;"></div>
+        <p style="font-size:0.82rem;color:var(--text-lt);line-height:1.5;margin:0;">
+          <strong>How to read the map:</strong> Circles show localized monitoring stations.
+          <span style="color:#c0392b;font-weight:bold;">Red</span> = Critical,
+          <span style="color:#d35400;font-weight:bold;">Orange</span> = High,
+          <span style="color:#d4ac0d;font-weight:bold;">Yellow</span> = Moderate.
+          Click a circle for live temperature, humidity, and top pest warnings.
+        </p>
+      </div>
     </div>
 
     <input type="file" id="fileInput" accept="image/*" onchange="handleImageUpload(event)">
@@ -1235,6 +1290,86 @@ LANGUAGE: reply in the same language the user writes in.`;
       `;
     } else {
       textNode.textContent = rawText;
+    }
+  }
+
+  // ── Tab Switcher ──────────────────────────────────────────────────────────
+  let _mapReady = false;
+  let _leafletMap = null;
+
+  window.switchTab = function(name) {
+    document.getElementById('chat-tab-panel').style.display = name === 'chat' ? 'flex' : 'none';
+    document.getElementById('map-tab-panel').style.display  = name === 'map'  ? 'flex' : 'none';
+    document.getElementById('tab-btn-chat').classList.toggle('active', name === 'chat');
+    document.getElementById('tab-btn-map').classList.toggle('active',  name === 'map');
+    if (name === 'map') setTimeout(initRegionalMap, 60);
+  };
+
+  // ── Regional Pest Risk Map ────────────────────────────────────────────────
+  async function initRegionalMap() {
+    if (_mapReady && _leafletMap) { _leafletMap.invalidateSize(); return; }
+    const status = document.getElementById('map-location-status');
+    if (status) status.textContent = 'Detecting location…';
+
+    let lat = 16.5, lon = 79.5;
+    if (navigator.geolocation) {
+      try {
+        const pos = await new Promise((res, rej) =>
+          navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, timeout: 5000 }));
+        lat = pos.coords.latitude;
+        lon = pos.coords.longitude;
+        if (status) status.textContent = `Field coords: ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+      } catch { if (status) status.textContent = 'Using AP/Telangana regional centroid'; }
+    } else {
+      if (status) status.textContent = 'Using AP/Telangana regional centroid';
+    }
+
+    try {
+      _leafletMap = L.map('regional-pest-map').setView([lat, lon], 10);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+      }).addTo(_leafletMap);
+      _mapReady = true;
+
+      const rsp  = await fetch(`/api/regional-risk?lat=${lat}&lon=${lon}`);
+      if (!rsp.ok) throw new Error(`HTTP ${rsp.status}`);
+      const locs = await rsp.json();
+
+      const COLORS = { Critical:'#e74c3c', High:'#e67e22', Moderate:'#d4ac0d', Low:'#3498db' };
+      const FILL_OP = { Critical:0.45, High:0.38, Moderate:0.28, Low:0.18 };
+
+      locs.forEach(loc => {
+        const lvls = (loc.risks||[]).map(r=>r.level);
+        const top  = ['Critical','High','Moderate','Low'].find(l => lvls.includes(l)) || 'Low';
+        const clr  = COLORS[top];
+
+        const circle = L.circle([loc.latitude, loc.longitude], {
+          color: clr, fillColor: clr, fillOpacity: FILL_OP[top], radius: 6000
+        }).addTo(_leafletMap);
+
+        const risksHtml = (loc.risks||[]).map(r => {
+          const bk = r.level==='Critical' ? '#c0392b' : r.level==='High' ? '#d35400' : r.level==='Moderate' ? '#d4ac0d' : '#7f8c8d';
+          const lbl = (typeof currentLang !== 'undefined' && currentLang === 'te') ? (r.telugu||r.label) : r.label;
+          return `<div style="margin-bottom:7px;border-bottom:1px solid #f1f1f1;padding-bottom:5px;">
+            <span style="font-size:0.72rem;padding:2px 7px;border-radius:4px;background:${bk};color:#fff;font-weight:600;">${r.level}</span>
+            <strong style="margin-left:6px;font-size:0.88rem;color:#2c3e50;">${lbl}</strong>
+            <p style="margin:3px 0 0;font-size:0.78rem;color:#7f8c8d;line-height:1.35;">${r.description}</p>
+          </div>`;
+        }).join('') || '<p style="font-size:0.82rem;color:#7f8c8d;margin:0;">No active pest risks for current conditions.</p>';
+
+        circle.bindPopup(`
+          <div style="font-family:sans-serif;width:265px;">
+            <h4 style="margin:0 0 4px;color:#27ae60;font-size:0.97rem;border-bottom:2px solid #27ae60;padding-bottom:4px;">${loc.name}</h4>
+            <div style="display:flex;justify-content:space-between;font-size:0.82rem;color:#34495e;font-weight:500;margin:7px 0;">
+              <span>🌡️ Temp: <strong>${loc.temperature}°C</strong></span>
+              <span>💧 Humidity: <strong>${loc.humidity}%</strong></span>
+            </div>
+            <div style="max-height:210px;overflow-y:auto;margin-top:6px;">${risksHtml}</div>
+          </div>`);
+      });
+    } catch (err) {
+      console.error('Map init error:', err);
+      if (status) status.textContent = 'Map load failed — check network.';
     }
   }
 </script>

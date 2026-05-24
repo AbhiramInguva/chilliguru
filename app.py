@@ -472,6 +472,240 @@ def health():
         "groq_ready": bool(os.getenv("GROQ_API_KEY", "")),
     })
 
+@app.route("/api/regional-risk")
+def regional_risk():
+    import requests
+    try:
+        lat = float(request.args.get("lat"))
+        lon = float(request.args.get("lon"))
+    except (TypeError, ValueError):
+        lat = 16.5
+        lon = 79.5
+
+    temp = 28.0
+    humidity = 60.0
+    try:
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m"
+        resp = requests.get(url, timeout=3.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            current = data.get("current", {})
+            if "temperature_2m" in current:
+                temp = float(current["temperature_2m"])
+            if "relative_humidity_2m" in current:
+                humidity = float(current["relative_humidity_2m"])
+    except Exception as e:
+        log.warning("open_meteo_api_error", extra={"data": {"error": str(e)}})
+
+    def calculate_risks(t, h):
+        risks = []
+        # 1. Invasive Black Thrips
+        if 20.0 <= t <= 33.0 and h < 55.0:
+            risks.append({
+                "pest": "invasive_black_thrips",
+                "label": "Invasive Black Thrips",
+                "telugu": "నల్ల తామర పురుగు",
+                "level": "Critical",
+                "description": "Warm and dry conditions are highly optimal for Invasive Black Thrips expansion."
+            })
+        elif 18.0 <= t <= 35.0 and h < 65.0:
+            risks.append({
+                "pest": "invasive_black_thrips",
+                "label": "Invasive Black Thrips",
+                "telugu": "నల్ల తామర పురుగు",
+                "level": "High",
+                "description": "Favorable conditions for thrips activity. Monitor leaf undersides."
+            })
+        elif 15.0 <= t <= 38.0:
+            risks.append({
+                "pest": "invasive_black_thrips",
+                "label": "Invasive Black Thrips",
+                "telugu": "నల్ల తామర పురుగు",
+                "level": "Moderate",
+                "description": "Moderate thrips activity. Keep field borders clean."
+            })
+
+        # 2. Aphids
+        if t < 26.0 and h > 65.0:
+            risks.append({
+                "pest": "aphids",
+                "label": "Aphids",
+                "telugu": "పేను పురుగు",
+                "level": "High",
+                "description": "Cooler temperatures and high humidity promote rapid aphid colonization."
+            })
+        elif t < 30.0 and h > 50.0:
+            risks.append({
+                "pest": "aphids",
+                "label": "Aphids",
+                "telugu": "పేను పురుగు",
+                "level": "Moderate",
+                "description": "Moderate risk of aphids. Look for ants or honey-dew deposits."
+            })
+
+        # 3. Whitefly
+        if 26.0 <= t <= 38.0 and h > 75.0:
+            risks.append({
+                "pest": "whitefly_leaf_damage",
+                "label": "Whitefly",
+                "telugu": "తెల్ల ఈగ",
+                "level": "Critical",
+                "description": "Hot and humid microclimate triggers massive whitefly outbreak."
+            })
+        elif 24.0 <= t <= 40.0 and h > 60.0:
+            risks.append({
+                "pest": "whitefly_leaf_damage",
+                "label": "Whitefly",
+                "telugu": "తెల్ల ఈగ",
+                "level": "High",
+                "description": "High risk of whitefly migration. Yellow sticky traps recommended."
+            })
+        elif 20.0 <= t <= 42.0:
+            risks.append({
+                "pest": "whitefly_leaf_damage",
+                "label": "Whitefly",
+                "telugu": "తెల్ల ఈగ",
+                "level": "Moderate",
+                "description": "Moderate whitefly presence. Inspect shoots regularly."
+            })
+
+        # 4. Broad Mites / Red Mites
+        if t > 33.0 and h < 45.0:
+            risks.append({
+                "pest": "broad_mites",
+                "label": "Broad Mites",
+                "telugu": "ఎర్ర సాలె పురుగు",
+                "level": "Critical",
+                "description": "Very hot and dry weather causes rapid broad mite infestation cycles."
+            })
+        elif t > 30.0 and h < 55.0:
+            risks.append({
+                "pest": "broad_mites",
+                "label": "Broad Mites",
+                "telugu": "ఎర్ర సాలె పురుగు",
+                "level": "High",
+                "description": "High temperature and dry wind favor mite propagation."
+            })
+        elif t > 25.0:
+            risks.append({
+                "pest": "broad_mites",
+                "label": "Broad Mites",
+                "telugu": "ఎర్ర సాలె పురుగు",
+                "level": "Moderate",
+                "description": "Moderate risk. Overhead irrigation can suppress mite build-up."
+            })
+
+        # 5. Fruit Borer
+        if 24.0 <= t <= 35.0 and h > 65.0:
+            risks.append({
+                "pest": "fruit_borer",
+                "label": "Fruit Borer",
+                "telugu": "పండు తొలిచే పురుగు",
+                "level": "High",
+                "description": "Warm, humid conditions speed up egg-hatching and fruit borer damage."
+            })
+        elif 20.0 <= t <= 38.0:
+            risks.append({
+                "pest": "fruit_borer",
+                "label": "Fruit Borer",
+                "telugu": "పండు తొలిచే పురుగు",
+                "level": "Moderate",
+                "description": "Moderate risk of fruit borer. Check for bored entry holes in fruits."
+            })
+
+        # 6. Tobacco Caterpillar
+        if 25.0 <= t <= 36.0 and h > 70.0:
+            risks.append({
+                "pest": "tobacco_caterpillar",
+                "label": "Tobacco Caterpillar",
+                "telugu": "గొంగళి పురుగు",
+                "level": "High",
+                "description": "High humidity and temperature increase risk of Spodoptera caterpillar activity."
+            })
+        elif 22.0 <= t <= 38.0:
+            risks.append({
+                "pest": "tobacco_caterpillar",
+                "label": "Tobacco Caterpillar",
+                "telugu": "గొంగళి పురుగు",
+                "level": "Moderate",
+                "description": "Moderate threat. Watch for skeletonized leaf patches."
+            })
+
+        # 7. Yellow Thrips
+        if 20.0 <= t <= 32.0 and h < 60.0:
+            risks.append({
+                "pest": "yellow_thrips",
+                "label": "Yellow Thrips",
+                "telugu": "తామర పురుగు",
+                "level": "High",
+                "description": "Favorable dry temperature range for yellow thrips feeding on new leaves."
+            })
+        elif 18.0 <= t <= 36.0:
+            risks.append({
+                "pest": "yellow_thrips",
+                "label": "Yellow Thrips",
+                "telugu": "తామర పురుగు",
+                "level": "Moderate",
+                "description": "Moderate risk. Upward leaf curling might begin."
+            })
+
+        # 8. Mealybugs
+        if t > 25.0 and h > 60.0:
+            risks.append({
+                "pest": "mealybugs",
+                "label": "Mealybugs",
+                "telugu": "పిండి పురుగు",
+                "level": "High",
+                "description": "Warmth and humidity favor white cottony mealybug cluster formation."
+            })
+        elif t > 20.0:
+            risks.append({
+                "pest": "mealybugs",
+                "label": "Mealybugs",
+                "telugu": "పిండి పురుగు",
+                "level": "Moderate",
+                "description": "Moderate risk. Prune heavily infested shoots."
+            })
+
+        level_order = {"Critical": 0, "High": 1, "Moderate": 2, "Low": 3}
+        risks.sort(key=lambda r: level_order.get(r["level"], 4))
+        return risks
+
+    locations = []
+    locations.append({
+        "latitude": lat,
+        "longitude": lon,
+        "name": "Requested Field Centroid",
+        "temperature": temp,
+        "humidity": humidity,
+        "risks": calculate_risks(temp, humidity)
+    })
+    locations.append({
+        "latitude": lat,
+        "longitude": lon + 0.05,
+        "name": "East Regional Watchpoint",
+        "temperature": round(temp + 2.0, 1),
+        "humidity": round(max(5.0, humidity - 15.0), 1),
+        "risks": calculate_risks(temp + 2.0, max(5.0, humidity - 15.0))
+    })
+    locations.append({
+        "latitude": lat + 0.05,
+        "longitude": lon,
+        "name": "North Regional Watchpoint",
+        "temperature": round(temp - 2.0, 1),
+        "humidity": round(min(99.0, humidity + 15.0), 1),
+        "risks": calculate_risks(temp - 2.0, min(99.0, humidity + 15.0))
+    })
+    locations.append({
+        "latitude": lat - 0.04,
+        "longitude": lon - 0.04,
+        "name": "South-West Regional Station",
+        "temperature": round(temp + 1.0, 1),
+        "humidity": round(min(99.0, humidity + 5.0), 1),
+        "risks": calculate_risks(temp + 1.0, min(99.0, humidity + 5.0))
+    })
+    return jsonify(locations)
+
 @app.route("/chat", methods=["POST"])
 def chat():
     try:

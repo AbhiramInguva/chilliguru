@@ -600,3 +600,175 @@ LANGUAGE: reply in the same language the user writes in.`;
       textNode.textContent = rawText;
     }
   }
+
+  let mapInitialized = false;
+  let leafletMap = null;
+
+  window.switchTab = function(tabName) {
+    const chatBtn = document.querySelector(".tab-btn[onclick*=\"'chat'\"]");
+    const mapBtn = document.querySelector(".tab-btn[onclick*=\"'map'\"]");
+    const chatPanel = document.getElementById("chat-tab-panel");
+    const mapPanel = document.getElementById("map-tab-panel");
+
+    if (tabName === 'chat') {
+      if (chatBtn) chatBtn.classList.add('active');
+      if (mapBtn) mapBtn.classList.remove('active');
+      if (chatPanel) {
+        chatPanel.style.display = 'flex';
+        chatPanel.classList.add('active');
+      }
+      if (mapPanel) {
+        mapPanel.style.display = 'none';
+        mapPanel.classList.remove('active');
+      }
+    } else if (tabName === 'map') {
+      if (chatBtn) chatBtn.classList.remove('active');
+      if (mapBtn) mapBtn.classList.add('active');
+      if (chatPanel) {
+        chatPanel.style.display = 'none';
+        chatPanel.classList.remove('active');
+      }
+      if (mapPanel) {
+        mapPanel.style.display = 'flex';
+        mapPanel.classList.add('active');
+      }
+      // Initialize map on switch
+      setTimeout(() => {
+        initRegionalMap();
+      }, 50);
+    }
+  };
+
+  async function initRegionalMap() {
+    if (mapInitialized && leafletMap) {
+      leafletMap.invalidateSize();
+      return;
+    }
+    
+    const statusText = document.getElementById("map-location-status");
+    if (statusText) statusText.textContent = "Detecting current coordinates...";
+
+    // Default centroid coordinates if geolocation is not shared
+    let lat = 16.5;
+    let lon = 79.5;
+
+    // Use navigator.geolocation high accuracy
+    if (navigator.geolocation) {
+      try {
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 5000,
+            maximumAge: 0
+          });
+        });
+        lat = position.coords.latitude;
+        lon = position.coords.longitude;
+        if (statusText) statusText.textContent = `Centered on field: ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+      } catch (err) {
+        console.warn("Map Geolocation failed, using AP/Telangana Centroid:", err);
+        if (statusText) statusText.textContent = "Using regional baseline center coordinates";
+      }
+    } else {
+      if (statusText) statusText.textContent = "Using regional baseline center coordinates";
+    }
+
+    try {
+      // Initialize Leaflet map
+      leafletMap = L.map('regional-pest-map').setView([lat, lon], 10);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+      }).addTo(leafletMap);
+
+      mapInitialized = true;
+
+      // Fetch regional risk data
+      const response = await fetch(`/api/regional-risk?lat=${lat}&lon=${lon}`);
+      if (!response.ok) {
+        throw new Error(`API returned status ${response.status}`);
+      }
+      const data = await response.json();
+
+      data.forEach(loc => {
+        // Determine the highest risk level to color the circle
+        let highestLevel = 'Low';
+        if (loc.risks && loc.risks.length > 0) {
+          const levels = loc.risks.map(r => r.level);
+          if (levels.includes('Critical')) {
+            highestLevel = 'Critical';
+          } else if (levels.includes('High')) {
+            highestLevel = 'High';
+          } else if (levels.includes('Moderate')) {
+            highestLevel = 'Moderate';
+          }
+        }
+
+        // Color mapping
+        let color = '#3498db'; // blue for low/none
+        let fillOpacity = 0.2;
+        if (highestLevel === 'Critical') {
+          color = '#e74c3c'; // red
+          fillOpacity = 0.45;
+        } else if (highestLevel === 'High') {
+          color = '#e67e22'; // orange
+          fillOpacity = 0.35;
+        } else if (highestLevel === 'Moderate') {
+          color = '#f1c40f'; // yellow
+          fillOpacity = 0.25;
+        }
+
+        // Draw spatial coverage risk circle
+        const circle = L.circle([loc.latitude, loc.longitude], {
+          color: color,
+          fillColor: color,
+          fillOpacity: fillOpacity,
+          radius: 6000 // 6km radius spatial coverage
+        }).addTo(leafletMap);
+
+        // Build popup content
+        let risksHtml = '';
+        if (loc.risks && loc.risks.length > 0) {
+          risksHtml = loc.risks.map(r => {
+            let badgeColor = 'background: #34495e; color: white;';
+            if (r.level === 'Critical') badgeColor = 'background: #c0392b; color: white; font-weight: bold;';
+            else if (r.level === 'High') badgeColor = 'background: #d35400; color: white;';
+            else if (r.level === 'Moderate') badgeColor = 'background: #f39c12; color: white;';
+            
+            // Localized labels
+            let label = currentLang === 'te' ? r.telugu || r.label : r.label;
+            return `
+              <div style="margin-bottom: 8px; border-bottom: 1px solid #f1f1f1; padding-bottom: 6px;">
+                <span style="font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; ${badgeColor}">${r.level}</span>
+                <strong style="margin-left: 6px; font-size: 0.9rem; color: #2c3e50;">${label}</strong>
+                <p style="margin: 4px 0 0 0; font-size: 0.8rem; color: #7f8c8d; line-height: 1.3;">${r.description}</p>
+              </div>
+            `;
+          }).join('');
+        } else {
+          risksHtml = '<p style="font-size: 0.85rem; color: #7f8c8d; margin: 0;">No significant pest risks identified for current climate.</p>';
+        }
+
+        const titleText = loc.name;
+        const tempText = currentLang === 'te' ? `ఉష్ణోగ్రత` : `Temp`;
+        const humText = currentLang === 'te' ? `తేమ` : `Humidity`;
+        
+        const popupContent = `
+          <div style="font-family: 'DM Sans', sans-serif; width: 260px;">
+            <h4 style="margin: 0 0 4px 0; color: #27ae60; font-size: 1rem; border-bottom: 2px solid #27ae60; padding-bottom: 4px;">${titleText}</h4>
+            <div style="display: flex; justify-content: space-between; margin: 8px 0; font-size: 0.85rem; color: #34495e; font-weight: 500;">
+              <span>🌡️ ${tempText}: <strong>${loc.temperature}°C</strong></span>
+              <span>💧 ${humText}: <strong>${loc.humidity}%</strong></span>
+            </div>
+            <div style="max-height: 200px; overflow-y: auto; padding-right: 4px; margin-top: 8px;">
+              ${risksHtml}
+            </div>
+          </div>
+        `;
+        circle.bindPopup(popupContent);
+      });
+
+    } catch (mapErr) {
+      console.error("Error loading regional map data:", mapErr);
+      if (statusText) statusText.textContent = "Failed to load risk mapping. Please retry.";
+    }
+  }

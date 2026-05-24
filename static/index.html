@@ -8,6 +8,9 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,400&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/css/style.css">
+<!-- Leaflet Map CSS & JS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 </head>
 <body>
 
@@ -81,66 +84,89 @@
   </aside>
 
   <!-- Main Chat -->
-  <main class="chat-area">
-    <div class="chat-messages" id="chatMessages">
+  <main class="chat-area" style="display: flex; flex-direction: column;">
+    <div class="tab-container">
+      <button class="tab-btn active" onclick="switchTab('chat')">📷 Camera Scan Diagnosis</button>
+      <button class="tab-btn" onclick="switchTab('map')">🗺️ Regional Risk Map</button>
+    </div>
 
-      <!-- Welcome State -->
-      <div class="welcome" id="welcomeState">
-        <div class="welcome-glyph">🌶️</div>
-        <h2>Namaste! I'm ChilliGuru</h2>
-        <p>Your expert farming assistant for Andhra Pradesh &amp; Telangana. Ask me anything about growing chillies — in English, Telugu, or Hindi.</p>
-        <div class="welcome-cards">
-          <div class="welcome-card" onclick="askQuestion('I am a beginner. How do I start growing Teja chilli?')">
-            <span class="wc-icon">🌱</span>
-            <div class="wc-title">Start Growing</div>
-            <div class="wc-desc">Seed to harvest guide for beginners</div>
-          </div>
-          <div class="welcome-card" onclick="triggerImageUpload()">
-            <span class="wc-icon">📷</span>
-            <div class="wc-title">Identify Pest</div>
-            <div class="wc-desc">Upload a photo for AI diagnosis</div>
-          </div>
-          <div class="welcome-card" onclick="askQuestion('నా మిరప ఆకులు పసుపు రంగులోకి మారుతున్నాయి — ఎందుకు?')">
-            <span class="wc-icon">🍃</span>
-            <div class="wc-title">తెలుగులో అడగండి</div>
-            <div class="wc-desc">Full Telugu language support</div>
-          </div>
-          <div class="welcome-card" onclick="askQuestion('Best organic spray to prevent pests during Kharif season in Guntur?')">
-            <span class="wc-icon">🌿</span>
-            <div class="wc-title">Organic Solutions</div>
-            <div class="wc-desc">Home-made &amp; shop remedies</div>
+    <!-- Chat Tab Panel -->
+    <div id="chat-tab-panel" class="tab-panel active" style="display: flex; flex-direction: column; flex: 1; min-height: 0;">
+      <div class="chat-messages" id="chatMessages" style="flex: 1; overflow-y: auto; padding: 24px;">
+        <!-- Welcome State -->
+        <div class="welcome" id="welcomeState">
+          <div class="welcome-glyph">🌶️</div>
+          <h2>Namaste! I'm ChilliGuru</h2>
+          <p>Your expert farming assistant for Andhra Pradesh &amp; Telangana. Ask me anything about growing chillies — in English, Telugu, or Hindi.</p>
+          <div class="welcome-cards">
+            <div class="welcome-card" onclick="askQuestion('I am a beginner. How do I start growing Teja chilli?')">
+              <span class="wc-icon">🌱</span>
+              <div class="wc-title">Start Growing</div>
+              <div class="wc-desc">Seed to harvest guide for beginners</div>
+            </div>
+            <div class="welcome-card" onclick="triggerImageUpload()">
+              <span class="wc-icon">📷</span>
+              <div class="wc-title">Identify Pest</div>
+              <div class="wc-desc">Upload a photo for AI diagnosis</div>
+            </div>
+            <div class="welcome-card" onclick="askQuestion('నా మిరప ఆకులు పసుపు రంగులోకి మారుతున్నాయి — ఎందుకు?')">
+              <span class="wc-icon">🍃</span>
+              <div class="wc-title">తెలుగులో అడగండి</div>
+              <div class="wc-desc">Full Telugu language support</div>
+            </div>
+            <div class="welcome-card" onclick="askQuestion('Best organic spray to prevent pests during Kharif season in Guntur?')">
+              <span class="wc-icon">🌿</span>
+              <div class="wc-title">Organic Solutions</div>
+              <div class="wc-desc">Home-made &amp; shop remedies</div>
+            </div>
           </div>
         </div>
       </div>
 
-    </div>
-
-    <!-- Image Preview -->
-    <div class="image-preview" id="imagePreview">
-      <img class="preview-img" id="previewImg" src="" alt="">
-      <span id="previewName">photo.jpg</span>
-      <button class="remove-img" onclick="removeImage()" aria-label="Remove image">✕</button>
-    </div>
-
-    <!-- Floating Input Dock -->
-    <div class="input-area">
-      <div class="input-box">
-        <button class="dock-camera" onclick="openCamera()" title="Take photo with camera" aria-label="Open camera">📷</button>
-        <button class="dock-upload" onclick="triggerImageUpload()" title="Upload from gallery" aria-label="Upload image">🖼️</button>
-        <textarea
-          id="userInput"
-          placeholder="Ask about your chilli crop…"
-          rows="1"
-          onkeydown="handleKey(event)"
-          oninput="autoResize(this)"
-        ></textarea>
-        <button class="send-btn" id="sendBtn" onclick="sendMessage()" aria-label="Send message">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M22 2L11 13"/><path d="M22 2L15 22 11 13 2 9l20-7z"/>
-          </svg>
-        </button>
+      <!-- Image Preview -->
+      <div class="image-preview" id="imagePreview">
+        <img class="preview-img" id="previewImg" src="" alt="">
+        <span id="previewName">photo.jpg</span>
+        <button class="remove-img" onclick="removeImage()" aria-label="Remove image">✕</button>
       </div>
-      <div class="input-hint">📷 Camera &nbsp;·&nbsp; 🖼️ Gallery upload &nbsp;·&nbsp; Organic solutions only</div>
+
+      <!-- Floating Input Dock -->
+      <div class="input-area">
+        <div class="input-box">
+          <button class="dock-camera" onclick="openCamera()" title="Take photo with camera" aria-label="Open camera">📷</button>
+          <button class="dock-upload" onclick="triggerImageUpload()" title="Upload from gallery" aria-label="Upload image">🖼️</button>
+          <textarea
+            id="userInput"
+            placeholder="Ask about your chilli crop…"
+            rows="1"
+            onkeydown="handleKey(event)"
+            oninput="autoResize(this)"
+          ></textarea>
+          <button class="send-btn" id="sendBtn" onclick="sendMessage()" aria-label="Send message">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 2L11 13"/><path d="M22 2L15 22 11 13 2 9l20-7z"/>
+            </svg>
+          </button>
+        </div>
+        <div class="input-hint">📷 Camera &nbsp;·&nbsp; 🖼️ Gallery upload &nbsp;·&nbsp; Organic solutions only</div>
+      </div>
+    </div>
+
+    <!-- Map Tab Panel -->
+    <div id="map-tab-panel" class="tab-panel" style="display: none; flex-direction: column; flex: 1; min-height: 0; padding: 24px;">
+      <div style="background: var(--white); border-radius: 16px; border: 1px solid var(--border); padding: 20px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 16px; flex: 1; min-height: 0;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <h2 style="font-family: 'Fraunces', serif; font-size: 1.5rem; color: var(--green); margin: 0;">Regional Climate & Pest Risk</h2>
+          <span style="font-size: 0.85rem; color: var(--text-lt);" id="map-location-status">Detecting coordinates...</span>
+        </div>
+        <div id="regional-pest-map" style="height: 450px; border-radius: 12px; z-index: 1;"></div>
+        <div style="font-size: 0.85rem; color: var(--text-lt); line-height: 1.4;">
+          <strong>How to read the map:</strong> Circles represent localized monitoring centers. 
+          <span style="color: #c0392b; font-weight: bold;">Red</span> denotes Critical risk, 
+          <span style="color: #d35400; font-weight: bold;">Orange</span> is High risk, and 
+          <span style="color: #f1c40f; font-weight: bold;">Yellow</span> is Moderate risk. Click a circle to see specific climate values and high-risk pests.
+        </div>
+      </div>
     </div>
 
     <input type="file" id="fileInput" accept="image/*" onchange="handleImageUpload(event)">
