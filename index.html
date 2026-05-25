@@ -1017,9 +1017,24 @@ Cost: Rs X to Rs X
 How often: every X days for X weeks
 Where to get: [AP/Telangana]
 
-Always give 2-3 solutions. End with one prevention tip.
-ORGANIC ONLY — never suggest chemicals.
-LANGUAGE: reply in the same language the user writes in.`;
+When performing a plant diagnosis, structure your response strictly with these three headers:
+### Climate-Pest Correlation Analysis
+[Provide a brief analysis of the weather/climate factors correlated with this pest/disease pressure]
+
+### Biological & Organic Interventions
+[Provide 2-3 biological or organic solutions using the SOLUTION FORMAT above. You must use explicit sub-class targeting: recommend specific Bacterial vectors (such as Bacillus thuringiensis), Viral vectors (such as NPV blocks), or Fungal pathogens (such as Beauveria bassiana) tailored strictly to the diagnosed pest lifecycle.]
+
+### Targeted Chemical Interventions
+[Provide a brief overview of targeted chemical/inorganic alternatives. Provide chemical details (e.g., active ingredients) but advise biological/organic alternatives first since you are ChilliGuru.]
+
+For every recommended solution/intervention (both biological/organic and chemical), you must explicitly structure the output to include a "Cost-Effectiveness & Speed Evaluation Table" in markdown format. The table must contain these columns:
+- Intervention (name of the solution)
+- Estimated Cost per Acre (in INR ₹)
+- Efficacy Speed (e.g., 'Immediate 24hr knockdown' or '5-day systemic spread')
+- Environmental Residual Protection (residual window, e.g., '7 days' or '14 days')
+
+End with one prevention tip.
+ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interventions). LANGUAGE: reply in the same language the user writes in.`;
 
   // ── Groq API ───────────────────────────────────────────────────────────────
   async function callGroq(userMessage) {
@@ -1239,9 +1254,9 @@ LANGUAGE: reply in the same language the user writes in.`;
     let organic = '';
     let inorganic = '';
 
-    const climateRegex = /(?:Climate-Pest Correlation Analysis|Climate-Pest Correlation)[:\s*#-]*([\s\S]*?)(?=(?:Targeted Organic Regulation|Targeted Organic|Targeted Inorganic|$))/i;
-    const organicRegex = /(?:Targeted Organic Regulation|Targeted Organic)[:\s*#-]*([\s\S]*?)(?=(?:Targeted Inorganic Regulation|Targeted Inorganic|$))/i;
-    const inorganicRegex = /(?:Targeted Inorganic Regulation|Targeted Inorganic)[:\s*#-]*([\s\S]*?)$/i;
+    const climateRegex = /(?:Climate-Pest Correlation Analysis|Climate-Pest Correlation)[:\s*#-]*([\s\S]*?)(?=(?:Targeted Organic Regulation|Targeted Organic|Biological & Organic Interventions|Targeted Inorganic|Targeted Chemical Interventions|$))/i;
+    const organicRegex = /(?:Targeted Organic Regulation|Targeted Organic|Biological & Organic Interventions)[:\s*#-]*([\s\S]*?)(?=(?:Targeted Inorganic Regulation|Targeted Inorganic|Targeted Chemical Interventions|$))/i;
+    const inorganicRegex = /(?:Targeted Inorganic Regulation|Targeted Inorganic|Targeted Chemical Interventions)[:\s*#-]*([\s\S]*?)$/i;
 
     const mClimate = text.match(climateRegex);
     const mOrganic = text.match(organicRegex);
@@ -1278,12 +1293,12 @@ LANGUAGE: reply in the same language the user writes in.`;
           </div>` : ''}
           ${sections.organic ? `
           <div class="advisory-card organic-card">
-            <div class="card-header">🌿 Targeted Organic Regulation</div>
+            <div class="card-header">🌿 Biological & Organic Interventions</div>
             <div class="card-body">${sections.organic}</div>
           </div>` : ''}
           ${sections.inorganic ? `
           <div class="advisory-card inorganic-card">
-            <div class="card-header">🧪 Targeted Inorganic Regulation</div>
+            <div class="card-header">🧪 Targeted Chemical Interventions</div>
             <div class="card-body">${sections.inorganic}</div>
           </div>` : ''}
         </div>

@@ -51,18 +51,6 @@ _handler.setFormatter(_JsonFormatter())
 logging.root.setLevel(logging.INFO)
 logging.root.handlers = [_handler]
 log = logging.getLogger("chilliguru")
-
-CORE_CLASSES = [
-    "aphids",
-    "whitefly_leaf_damage",
-    "fruit_borer",
-    "tobacco_caterpillar",
-    "yellow_thrips",
-    "broad_mites",
-    "invasive_black_thrips",
-    "mealybugs"
-]
-
 REGIONAL_TRANSLATION_MAP = {
     "aphids": {
         "en": "Aphids",
@@ -75,7 +63,7 @@ REGIONAL_TRANSLATION_MAP = {
         "en": "Whitefly Leaf Damage",
         "hi": "सफेद मक्खी का नुकसान",
         "te": "తెల్ల ఈగ ఆకు నష్టం",
-        "kn": "ಬಿಳಿ ನೊಣದ ಎಲೆ ಹಾನಿ",
+        "kn": "ಬಿಳಿ ನೊಣದ ఎలె హాని",
         "ta": "வெள்ளை ஈ இலை சேதம்"
     },
     "fruit_borer": {
@@ -97,6 +85,44 @@ REGIONAL_TRANSLATION_MAP = {
         "hi": "पीला थ्रिप्स",
         "te": "పసుపు తామర పురుగు",
         "kn": "ಹಳದಿ ನುಸಿ",
+        "ta": "மஞ்சள் இலைப்பேன்"
+    },
+    "broad_mites": {
+        "en": "Broad Mites",
+        "hi": "चौड़ी मक्खियाँ (माइट्स)",
+        "te": "ఎర్ర నల్లి / తామర పురుగు",
+        "kn": "ಅಗಲವಾದ ನುಸಿ",
+        "ta": "பரந்த சிலந்திப் பேன்"
+    },
+    "invasive_black_thrips": {
+        "en": "Invasive Black Thrips",
+        "hi": "आक्रामक काला थ्रिप्स",
+        "te": "నల్ల తామర పురుగు",
+        "kn": "ಆಕ್ರಮಣಕಾರಿ ಕಪ್ಪು ನುಸಿ",
+        "ta": "ஊடுరుவும் கருப்பு இலைப்பேன்"
+    },
+    "mealybugs": {
+        "en": "Mealybugs",
+        "hi": "�    }
+}     "te": "బ్యాక్టీరియల్ ఆకు మచ్చ తెగులు",
+        "kn": "ಬ್ಯಾಕ್ಟೀರಿಯಾದ ಎಲೆ ಚುಕ್ಕೆ",
+        "ta": "பாக்டீரியா இலைப்புள்ளி"
+    },
+    "cercospora_leaf_spot": {
+        "en": "Cercospora Leaf Spot",
+        "hi": "सर्कोस्पोरा पत्ता धब्बा",
+        "te": "సెర్కోస్పోరా ఆకు మచ్చ తెగులు",
+        "kn": "ಸೆರ್ಕೋಸ್ಪೊರಾ ಎಲೆ ಚುಕ್ಕೆ",
+        "ta": "செர்கோஸ்போரா இலைப்புள்ளி"
+    },
+    "powdery_mildew": {
+        "en": "Powdery Mildew",
+        "hi": "पाउडर जैसी फफूंदी (चूर्णी फफूंद)",
+        "te": "బూడిద తెగులు",
+        "kn": "ಬೂದಿ ರೋಗ",
+        "ta": "சாம்பல் நோய்"
+    }
+}": "ಹಳದಿ ನುಸಿ",
         "ta": "மஞ்சள் இலைப்பேன்"
     },
     "broad_mites": {
@@ -144,6 +170,16 @@ def to_core_class(label_or_name):
         return "broad_mites"
     if "mealybug" in lbl:
         return "mealybugs"
+    if "leaf curl" in lbl or "curling" in lbl or "mosaic" in lbl or "mozaik" in lbl:
+        return "leaf_curl_virus"
+    if "cercospora" in lbl:
+        return "cercospora_leaf_spot"
+    if "bacterial" in lbl:
+        return "bacterial_leaf_spot"
+    if "spot" in lbl:
+        return "bacterial_leaf_spot"
+    if "powdery" in lbl or "mildew" in lbl or "leveillula" in lbl:
+        return "powdery_mildew"
     return None
 
 # ── Pre-compiled script regex map (built once at module load) ─────────────────
@@ -458,7 +494,7 @@ You are ChilliGuru, a friendly farming assistant for chilli farmers in Andhra Pr
 VARIETIES: Teja, Guntur Sannam, LCA 334, Wonder Hot, Pusa Jwala, Byadgi.
 SEASONS: Kharif (Jun-Oct), Rabi (Nov-Feb), Zaid (Mar-May).
 PESTS: Thrips, Spider Mites, Aphids, Whiteflies, Fruit Borer, Mealybugs, Leaf Miners, Armyworm.
-DISEASES: Leaf Curl Virus, Powdery Mildew, Anthracnose, Damping Off, Phytophthora, Bacterial Wilt.
+DISEASES: Leaf Curl Virus, Powdery Mildew, Anthracnose, Damping Off, Phytophthora, Bacterial Wilt, Cercospora Leaf Spot, Bacterial Leaf Spot.
 
 SOLUTION FORMAT:
   Solution name (Home-made OR Shop):
@@ -473,14 +509,25 @@ When performing a plant diagnosis, structure your response strictly with these t
 ### Climate-Pest Correlation Analysis
 [Provide a brief analysis of the weather/climate factors correlated with this pest/disease pressure]
 
-### Targeted Organic Regulation
-[Provide 2-3 organic solutions using the SOLUTION FORMAT above]
+### Biological & Organic Interventions
+[Provide 2-3 biological or organic solutions using the SOLUTION FORMAT above.
+- You must use explicit biological sub-class targeting: recommend specific Bacterial vectors (such as Bacillus thuringiensis), Viral vectors (such as NPV blocks), or Fungal pathogens (such as Beauveria bassiana or others) tailored strictly to the diagnosed pest/disease lifecycle.
+- For viral profiles (Leaf Curl Virus), you must mandate organic recommendations targeting the whitefly vector using biological fungal spores (specifically Beauveria bassiana).
+- For fungal/bacterial profile detections (Cercospora Leaf Spot, Bacterial Leaf Spot, Powdery Mildew), you must recommend organic treatments like Copper Hydroxide, Pseudomonas fluorescens, or systemic bio-agents.]
 
-### Targeted Inorganic Regulation
-[Provide a brief overview of targeted chemical/inorganic regulations, but advise organic alternatives first since you are ChilliGuru]
+### Targeted Chemical Interventions
+[Provide a brief overview of targeted chemical/inorganic alternatives. Provide chemical details (e.g., active ingredients) but advise biological/organic alternatives first since you are ChilliGuru.
+- For viral profiles (Leaf Curl Virus), you must mandate recommendations targeting the whitefly vector using systemic chemical neonicotinoids (specifically Acetamiprid).
+- For fungal/bacterial profile detections (Cercospora Leaf Spot, Bacterial Leaf Spot, Powdery Mildew), you must output clear tables contrasting organic treatments (Copper Hydroxide, Pseudomonas fluorescens, or systemic bio-agents) with targeted chemical choices.]
+
+For every recommended solution/intervention (both biological/organic and chemical), you must explicitly structure the output to include a "Cost-Effectiveness & Speed Evaluation Table" in markdown format. The table must contain these columns:
+- Intervention (name of the solution)
+- Estimated Cost per Acre (in INR ₹)
+- Efficacy Speed (e.g., 'Immediate 24hr knockdown' or '5-day systemic spread')
+- Environmental Residual Protection (residual window, e.g., '7 days' or '14 days')
 
 End with one prevention tip.
-ORGANIC ONLY (except when listing chemical details in Targeted Inorganic Regulation). LANGUAGE: reply in the same language the user writes in."""
+ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interventions). LANGUAGE: reply in the same language the user writes in."""
 
 @app.route("/")
 def index():
@@ -982,7 +1029,10 @@ def _compile_groq_payload(
             f"Farmer described: '{user_msg_clean}'\n"
             f"INSTRUCTION: Tell the farmer clearly what this {kind} is in simple words in {target_lang_name} "
             f"(mention the name '{translated_label_clean}' if helpful). "
-            f"Give 2-3 organic solutions with metrics. End with one prevention tip."
+            f"Provide a dual-structured treatment approach with 'Biological & Organic Interventions' and 'Targeted Chemical Interventions'. Enforce explicit biological sub-class targeting inside Biological sections (recommend specific bacterial vectors like Bacillus thuringiensis, viral vectors like NPV, or fungal pathogens tailored strictly to the diagnosed lifecycle). "
+            f"If the diagnosis is a viral profile (Leaf Curl Virus), you must mandate recommendations targeting the whitefly vector using biological fungal spores (specifically Beauveria bassiana) or systemic chemical neonicotinoids (specifically Acetamiprid). "
+            f"If the diagnosis is a fungal/bacterial profile (Cercospora Leaf Spot, Bacterial Leaf Spot, Powdery Mildew), you must output clear tables contrasting organic treatments (such as Copper Hydroxide, Pseudomonas fluorescens, or systemic bio-agents) with targeted chemical choices. "
+            f"For every suggested solution, you must explicitly render a 'Cost-Effectiveness & Speed Evaluation Table' in markdown showing: Estimated Cost per Acre in INR (₹), Efficacy Speed (e.g., Immediate 24hr knockdown vs 5-day systemic spread), and Environmental Residual Protection windows. End with one prevention tip."
             + low_note
         )
     else:
@@ -998,7 +1048,10 @@ def _compile_groq_payload(
             f"Ask them 2 specific questions about what they can see "
             f"(colour of affected area, location on plant — leaves/stem/fruit/roots, "
             f"any insects visible, holes in fruit, webbing, powder, spots etc) "
-            f"then give a diagnosis and 2-3 organic solutions with metrics."
+            f"then give a diagnosis followed by a dual-structured treatment plan under 'Biological & Organic Interventions' and 'Targeted Chemical Interventions'. Enforce explicit biological sub-class targeting (specific bacterial, viral, or fungal pathogens tailored to the lifecycle). "
+            f"If the diagnosis resolves to a viral profile (Leaf Curl Virus), you must mandate recommendations targeting the whitefly vector using biological fungal spores (Beauveria bassiana) or systemic chemical neonicotinoids (Acetamiprid). "
+            f"If the diagnosis resolves to a fungal/bacterial profile (Cercospora Leaf Spot, Bacterial Leaf Spot, Powdery Mildew), contrast organic treatments (Copper Hydroxide, Pseudomonas fluorescens, or systemic bio-agents) with targeted chemical choices in clear tables. "
+            f"For every suggestion, include a 'Cost-Effectiveness & Speed Evaluation Table' in markdown showing: Estimated Cost per Acre in INR (₹), Efficacy Speed, and Environmental Residual Protection windows. End with one prevention tip."
         )
 
 

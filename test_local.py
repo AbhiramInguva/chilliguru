@@ -15,7 +15,7 @@ WARN = "⚠️"
 results = []
 
 
-def test(name, func):
+def run_test_case(name, func):
     try:
         func()
         results.append((PASS, name))
@@ -45,7 +45,7 @@ REQUIRED_FILES = [
 ]
 
 for f in REQUIRED_FILES:
-    test(
+    run_test_case(
         f"File exists: {f}",
         lambda f=f: Path(f).exists()
         or (_ for _ in ()).throw(FileNotFoundError(f"{f} missing")),
@@ -80,7 +80,7 @@ def test_model_info():
     assert "margin_threshold" in info, "Missing margin_threshold"
 
 
-test("model_info.json structure", test_model_info)
+run_test_case("model_info.json structure", test_model_info)
 
 # ─────────────────────────────────────────────────────────────
 print("\n📓 3. Notebook Validation (chilli_v2.ipynb)")
@@ -111,7 +111,7 @@ def test_notebook():
         assert len(source.strip()) > 0, f"Code cell {i} is empty"
 
 
-test("Notebook structure valid", test_notebook)
+run_test_case("Notebook structure valid", test_notebook)
 
 # ─────────────────────────────────────────────────────────────
 print("\n🐍 4. Python Syntax Check (all .py files)")
@@ -127,7 +127,7 @@ for pyf in py_files:
         src = Path(f).read_text(encoding="utf-8")
         ast.parse(src)
 
-    test(f"Syntax OK: {pyf}", check_syntax)
+    run_test_case(f"Syntax OK: {pyf}", check_syntax)
 
 # ─────────────────────────────────────────────────────────────
 print("\n📦 5. Import Check (dependencies)")
@@ -142,7 +142,7 @@ for dep in CORE_DEPS:
     def check_import(d=dep):
         importlib.import_module(d)
 
-    test(f"Import: {dep}", check_import)
+    run_test_case(f"Import: {dep}", check_import)
 
 for dep in OPTIONAL_DEPS:
     try:
@@ -170,7 +170,7 @@ def test_hf_app_logic():
     assert not is_low_confidence(70.0, 0.01), "70% should be confident regardless of margin"
 
 
-test("Confidence/margin logic", test_hf_app_logic)
+run_test_case("Confidence/margin logic", test_hf_app_logic)
 
 # ─────────────────────────────────────────────────────────────
 print("\n🌐 7. Flask App — Route Check")
@@ -195,7 +195,7 @@ def test_flask_routes():
     assert "/detect" in routes, "Missing '/detect' route"
 
 
-test("Flask routes (/detect exists)", test_flask_routes)
+run_test_case("Flask routes (/detect exists)", test_flask_routes)
 
 # ─────────────────────────────────────────────────────────────
 print("\n📄 8. upload_to_hf.py — Dry Run Check")
@@ -212,7 +212,7 @@ def test_upload_script():
     assert "argparse" in content, "Should accept file paths as arguments"
 
 
-test("upload_to_hf.py security & args", test_upload_script)
+run_test_case("upload_to_hf.py security & args", test_upload_script)
 
 # ─────────────────────────────────────────────────────────────
 print("\n🔧 9. Requirements Consistency")
@@ -230,7 +230,7 @@ def test_requirements():
         assert pkg in hf_packages, f"HF requirements missing: {pkg}"
 
 
-test("HF Space requirements complete", test_requirements)
+run_test_case("HF Space requirements complete", test_requirements)
 
 # ─────────────────────────────────────────────────────────────
 print("\n🔄 10. End-to-End Mock (Flask → HF prediction format)")
@@ -285,7 +285,7 @@ def test_e2e_format():
     assert error_response.get("top_detection") is None
 
 
-test("E2E format: HF → Flask parsing", test_e2e_format)
+run_test_case("E2E format: HF → Flask parsing", test_e2e_format)
 
 # ─────────────────────────────────────────────────────────────
 # SUMMARY

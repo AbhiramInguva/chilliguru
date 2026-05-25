@@ -321,9 +321,9 @@ CLASS_SPECIFIC_THRESHOLDS = {
 }
 
 CLASS_THRESHOLDS = {
-    "Fruit Borer": 0.85,      # High mathematical bar to filter out false worm/aphid patterns
-    "Armyworm": 0.50,         # Standard threshold for surface caterpillars
-    "Aphids": 0.45
+    "aphids": 0.40, "whitefly_leaf_damage": 0.45, "fruit_borer": 0.55, "tobacco_caterpillar": 0.45,
+    "yellow_thrips": 0.38, "broad_mites": 0.38, "invasive_black_thrips": 0.48, "mealybugs": 0.42,
+    "leaf_curl_virus": 0.45, "bacterial_leaf_spot": 0.50, "cercospora_leaf_spot": 0.48, "powdery_mildew": 0.42
 }
 
 # ── Unified threshold resolver ────────────────────────────────────────────────
@@ -336,7 +336,7 @@ def _resolve_conf_threshold(friendly_eng: str, raw_label: str) -> float:
     Return the effective percentage-scale confidence threshold for a label.
     Priority order:
       1. CLASS_SPECIFIC_THRESHOLDS (keyed by raw_label or friendly_eng)
-      2. CLASS_THRESHOLDS keyword match (fruit borer / armyworm / aphid)
+      2. CLASS_THRESHOLDS keyword match
       3. Global CONFIDENCE_THRESHOLD fallback
     """
     # 1. Specific overrides
@@ -350,9 +350,18 @@ def _resolve_conf_threshold(friendly_eng: str, raw_label: str) -> float:
     # 2. Keyword-driven CLASS_THRESHOLDS
     lbl_lower = (friendly_eng + " " + raw_label).lower()
     _keyword_map = {
-        "fruit borer": "Fruit Borer",
-        "armyworm":    "Armyworm",
-        "aphid":       "Aphids",
+        "fruit borer": "fruit_borer",
+        "armyworm":    "tobacco_caterpillar",
+        "aphid":       "aphids",
+        "whitefly":    "whitefly_leaf_damage",
+        "yellow thrips": "yellow_thrips",
+        "broad mites": "broad_mites",
+        "black thrips": "invasive_black_thrips",
+        "mealybug":    "mealybugs",
+        "leaf curl":   "leaf_curl_virus",
+        "bacterial":   "bacterial_leaf_spot",
+        "cercospora":  "cercospora_leaf_spot",
+        "powdery":     "powdery_mildew",
     }
     for kw, key in _keyword_map.items():
         if kw in lbl_lower:
@@ -480,7 +489,11 @@ CORE_CLASSES = [
     "yellow_thrips",
     "broad_mites",
     "invasive_black_thrips",
-    "mealybugs"
+    "mealybugs",
+    "leaf_curl_virus",
+    "bacterial_leaf_spot",
+    "cercospora_leaf_spot",
+    "powdery_mildew"
 ]
 
 # ── IP102 to ChilliGuru class mapping (Phase 2 fallback) ──────────────────────
@@ -499,6 +512,10 @@ IP102_CLASS_MAPPING = {
     "whitefly_leaf_damage": ("whitefly_leaf_damage", "whitefly_leaf_damage", "pest"),
     "broad_mites":        ("broad_mites", "broad_mites", "pest"),
     "invasive_black_thrips": ("invasive_black_thrips", "invasive_black_thrips", "pest"),
+    "leaf_curl_virus":     ("leaf_curl_virus", "leaf_curl_virus", "disease"),
+    "bacterial_leaf_spot": ("bacterial_leaf_spot", "bacterial_leaf_spot", "disease"),
+    "cercospora_leaf_spot":("cercospora_leaf_spot", "cercospora_leaf_spot", "disease"),
+    "powdery_mildew":      ("powdery_mildew", "powdery_mildew", "disease"),
 }
 
 def _get_friendly_name(raw_label):
@@ -523,7 +540,7 @@ def _get_friendly_name(raw_label):
         "Red Mites leafs":                       ("Red Spider Mites – Leaf Damage",     "ఎర్ర సాలె పురుగు ఆకు నష్టం",        "pest"),
         "White Fly-Leafs":                       ("Whitefly – Leaf Damage",             "తెల్ల ఈగ ఆకు నష్టం",                "pest"),
         
-        # 8 Core Classes Mapping
+        # 12 Core Classes Mapping
         "aphids":                                ("Aphids",                             "పేను పురుగు",                       "pest"),
         "whitefly_leaf_damage":                  ("Whitefly Leaf Damage",               "తెల్ల ఈగ ఆకు నష్టం",                 "pest"),
         "fruit_borer":                           ("Fruit Borer",                        "పండు తొలిచే పురుగు",                "pest"),
@@ -532,6 +549,10 @@ def _get_friendly_name(raw_label):
         "broad_mites":                           ("Broad Mites",                        "ఎర్ర సాలె పురుగు",                  "pest"),
         "invasive_black_thrips":                 ("Invasive Black Thrips",              "నల్ల తామర పురుగు",                  "pest"),
         "mealybugs":                             ("Mealybugs",                          "పిండి పురుగు",                      "pest"),
+        "leaf_curl_virus":                       ("Leaf Curl Virus",                    "ఆకు ముడత వైరస్",                    "disease"),
+        "bacterial_leaf_spot":                   ("Bacterial Leaf Spot",                "బ్యాక్టీరియల్ ఆకు మచ్చ తెగులు",      "disease"),
+        "cercospora_leaf_spot":                  ("Cercospora Leaf Spot",               "సెర్కోస్పోరా ఆకు మచ్చ తెగులు",       "disease"),
+        "powdery_mildew":                        ("Powdery Mildew",                     "బూడిద తెగులు",                      "disease"),
     }
     english, telugu, kind = mapping.get(raw_label, (raw_label, "", "unknown"))
     return english, telugu, kind
@@ -643,6 +664,22 @@ PEST_INFO = {
     "mealybugs": {
         "symptoms": "White cottony clusters on stems, leaves and fruit joints, sticky sooty mold",
         "damage":   "Severe infestation causes wilting, stunting and complete plant collapse",
+    },
+    "leaf_curl_virus": {
+        "symptoms": "Leaves curl upward, cup-like distortion, yellowing and thickening of veins, stunted plant growth",
+        "damage":   "Transmitted by whitefly vector, causing severe yield reduction if plants are infected early.",
+    },
+    "bacterial_leaf_spot": {
+        "symptoms": "Small, water-soaked spots on leaves that turn dark brown/black with a yellow halo, spotting on fruit",
+        "damage":   "Causes defoliation, blossom drop, and unmarketable spotted fruit — spreads via wind/splashing water.",
+    },
+    "cercospora_leaf_spot": {
+        "symptoms": "Circular spots on leaves with light grey centers and dark brown margins (frog-eye look)",
+        "damage":   "Leads to severe premature defoliation under high humidity/temperature, exposing fruit to sunscald.",
+    },
+    "powdery_mildew": {
+        "symptoms": "White powdery growth on leaf undersides, corresponding yellow spots on upper surfaces, leaf shedding",
+        "damage":   "Causes rapid leaf drop, reducing photosynthesis and leading to sunscald on exposed chilli pods.",
     },
 }
 
@@ -946,7 +983,7 @@ def _detect_source_impl(source, bypass_ood=False):
                 # Intercept false fruit borer predictions
                 if "fruit borer" in friendly_eng.lower() or "fruit borer" in top["raw_label"].lower():
                     raw_conf_fraction = top["confidence"] / 100.0
-                    if raw_conf_fraction < CLASS_THRESHOLDS["Fruit Borer"]:
+                    if raw_conf_fraction < CLASS_THRESHOLDS["fruit_borer"]:
                         _save_to_shadow_dataset(source, top["raw_label"], top["confidence"])
                         return {
                             "success": False,
@@ -1119,7 +1156,7 @@ def _detect_source_impl(source, bypass_ood=False):
                 # Intercept false fruit borer predictions
                 if "fruit borer" in friendly_eng.lower() or "fruit borer" in mapped_raw.lower() or "fruit borer" in top["raw_label"].lower():
                     raw_conf_fraction = top["confidence"] / 100.0
-                    if raw_conf_fraction < CLASS_THRESHOLDS["Fruit Borer"]:
+                    if raw_conf_fraction < CLASS_THRESHOLDS["fruit_borer"]:
                         _save_to_shadow_dataset(source, top["raw_label"], top["confidence"])
                         return {
                             "success": False,

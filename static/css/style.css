@@ -1040,33 +1040,24 @@ textarea::placeholder { color: var(--ink-200); }
   white-space: pre-wrap;
 }
 
-.streaming-cursor::after {
-  content: "▋";
-  animation: blink-cursor 1s step-start infinite;
-  color: var(--text-lt);
-  margin-left: 2px;
-}
-@keyframes blink-cursor {
-  50% { opacity: 0; }
-}
-
 /* Tabs Container */
 .tab-container {
   display: flex;
   gap: 8px;
   padding: 12px 24px;
-  background: var(--white);
-  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  border-bottom: 1px solid rgba(10, 58, 32, 0.09);
   position: sticky;
   top: 0;
   z-index: 10;
+  flex-shrink: 0;
 }
 .tab-btn {
   padding: 8px 16px;
   border-radius: 20px;
-  border: 1px solid var(--border);
-  background: var(--cream);
-  color: var(--text-lt);
+  border: 1px solid rgba(10, 58, 32, 0.12);
+  background: var(--bg);
+  color: var(--ink-400);
   font-family: inherit;
   font-weight: 500;
   cursor: pointer;
@@ -1074,16 +1065,18 @@ textarea::placeholder { color: var(--ink-200); }
   display: flex;
   align-items: center;
   gap: 6px;
+  font-size: 13.5px;
 }
 .tab-btn:hover {
-  background: var(--border);
-  color: var(--text);
+  background: var(--e-25);
+  color: var(--ink-800);
+  border-color: var(--e-200);
 }
 .tab-btn.active {
-  background: var(--green);
-  color: var(--white);
-  border-color: var(--green);
-  box-shadow: 0 4px 12px rgba(45, 106, 79, 0.2);
+  background: var(--e-800);
+  color: var(--surface);
+  border-color: var(--e-800);
+  box-shadow: 0 4px 12px rgba(10, 58, 32, 0.28);
 }
 .tab-panel {
   display: none;
