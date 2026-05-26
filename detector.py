@@ -749,6 +749,123 @@ def _resolve_label(raw_label, cls_id):
 def _sev(c):
     return "High" if c >= 80 else ("Medium" if c >= 50 else "Low (not very sure)")
 
+def _differentiate_lookalike_pests(detections):
+    if len(detections) < 2:
+        return detections
+    
+    adjusted_detections = []
+    
+    # Calculate features for each detection
+    features = []
+    for d in detections:
+        coords = d.get("coordinates", {})
+        xmin = coords.get("xmin", 0)
+        ymin = coords.get("ymin", 0)
+        xmax = coords.get("xmax", 100)
+        ymax = coords.get("ymax", 100)
+        
+        w = xmax - xmin
+        h = ymax - ymin
+        cx = (xmin + xmax) / 2.0
+        cy = (ymin + ymax) / 2.0
+        area = w * h
+        aspect_ratio = max(w / (h + 1e-5), h / (w + 1e-5))
+        
+        features.append({
+            "detection": d,
+            "w": w,
+            "h": h,
+            "cx": cx,
+            "cy": cy,
+            "area": area,
+            "aspect_ratio": aspect_ratio,
+        })
+        
+    for i, f1 in enumerate(features):
+        d = f1["detection"]
+        raw_label = d.get("raw_label", "")
+        
+        # We only care about look-alike pests: Whiteflies, Aphids, Thrips
+        is_thrips = any(k in raw_label.lower() for k in ["thrips", "black thrips", "yellow thrips"])
+        is_aphids = any(k in raw_label.lower() for k in ["aphid", "aphids"])
+        is_whitefly = any(k in raw_label.lower() for k in ["whitefly", "white fly"])
+        
+        if not (is_thrips or is_aphids or is_whitefly):
+            adjusted_detections.append(d)
+            continue
+            
+        # Calculate neighbor list and spatial density
+        neighbors = []
+        for j, f2 in enumerate(features):
+            if i == j:
+                continue
+            dist = np.sqrt((f1["cx"] - f2["cx"])**2 + (f1["cy"] - f2["cy"])**2)
+            if dist < 250.0:  # neighborhood radius
+                neighbors.append(f2)
+                
+        density = len(neighbors)
+        
+        # Calculate grouping shape (circularity vs linearity / vein alignment)
+        grouping_shape = "isolated"
+        linearity = 1.0
+        if len(neighbors) >= 2:
+            pts = [[f1["cx"], f1["cy"]]] + [[n["cx"], n["cy"]] for n in neighbors]
+            pts = np.array(pts)
+            try:
+                cov = np.cov(pts.T)
+                if cov.ndim == 2 and not np.isnan(cov).any():
+                    evals, _ = np.linalg.eig(cov)
+                    evals = sorted(evals, reverse=True)
+                    if len(evals) >= 2 and evals[1] > 1e-5:
+                        linearity = evals[0] / evals[1]
+            except Exception:
+                pass
+            
+            if linearity > 2.2:
+                grouping_shape = "linear"  # linear alignment along leaf veins
+            else:
+                grouping_shape = "circular"  # circular clustering
+                
+        # Differentiate based on metrics
+        confidence = d["confidence"]
+        
+        # Refinement rules:
+        if is_thrips:
+            # Thrips should have higher aspect ratio and linear shape
+            if f1["aspect_ratio"] < 1.3 and grouping_shape == "circular" and density >= 4:
+                # Looks more like an Aphid cluster! Apply penalty to thrips confidence
+                d["confidence"] = max(d["confidence"] - 10.0, 10.0)
+                log.info("Spatial Descriptor: Downgrading Thrips due to low aspect ratio and circular grouping")
+            elif f1["aspect_ratio"] >= 1.7 or grouping_shape == "linear":
+                # Confirms thrips structure aligned along leaf veins - boost confidence slightly
+                d["confidence"] = min(d["confidence"] + 5.0, 100.0)
+                
+        elif is_aphids:
+            # Aphids should have aspect ratio near 1.0, and form clusters
+            if f1["aspect_ratio"] > 1.8 and grouping_shape == "linear":
+                # Looks like thrips aligned along a vein. Apply penalty to aphid
+                d["confidence"] = max(d["confidence"] - 10.0, 10.0)
+                log.info("Spatial Descriptor: Downgrading Aphids due to high aspect ratio and linear grouping")
+            elif f1["aspect_ratio"] < 1.4 and grouping_shape == "circular" and density >= 3:
+                # Confirms classic aphid cluster - boost confidence
+                d["confidence"] = min(d["confidence"] + 5.0, 100.0)
+                
+        elif is_whitefly:
+            # Whitefly should not be extremely large
+            if "damage" not in raw_label.lower() and f1["area"] > 8000:
+                # Whitefly is small. An extremely large box is likely not a whitefly
+                d["confidence"] = max(d["confidence"] - 15.0, 10.0)
+                log.info("Spatial Descriptor: Downgrading Whitefly due to excessively large box area")
+            elif f1["aspect_ratio"] > 2.0 and grouping_shape == "linear":
+                # Highly elongated and linear looks more like thrips
+                d["confidence"] = max(d["confidence"] - 10.0, 10.0)
+                
+        # Re-calculate severity based on adjusted confidence
+        d["severity"] = _sev(d["confidence"])
+        adjusted_detections.append(d)
+        
+    return adjusted_detections
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal cascade engine
@@ -976,6 +1093,7 @@ def _detect_source_impl(source, bypass_ood=False):
                         "coordinates": coords
                     })
 
+                detections = _differentiate_lookalike_pests(detections)
                 detections.sort(key=lambda x: x["confidence"], reverse=True)
                 top = detections[0]
 
@@ -1135,6 +1253,18 @@ def _detect_source_impl(source, bypass_ood=False):
                         raw_label,
                         {"symptoms": f"Detected by IP102: {english}", "damage": ""},
                     )
+
+                    try:
+                        xmin, ymin, xmax, ymax = map(int, box.xyxy[0])
+                    except (AttributeError, IndexError, TypeError, ValueError):
+                        xmin, ymin, xmax, ymax = 0, 0, 100, 100
+                    coords = {
+                        "xmin": xmin,
+                        "ymin": ymin,
+                        "xmax": xmax,
+                        "ymax": ymax
+                    }
+
                     detections.append({
                         "label":      display,
                         "raw_label":  model_name,
@@ -1143,8 +1273,10 @@ def _detect_source_impl(source, bypass_ood=False):
                         "severity":   _sev(confidence),
                         "symptoms":   info.get("symptoms", f"Damage by {english}"),
                         "damage":     info.get("damage", ""),
+                        "coordinates": coords
                     })
 
+                detections = _differentiate_lookalike_pests(detections)
                 detections.sort(key=lambda x: x["confidence"], reverse=True)
                 top = detections[0]
 
