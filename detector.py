@@ -46,7 +46,37 @@ class MockResult:
         self.boxes = boxes
         self.names = names
 
-def _generate_image_slices(image_array, slice_size=320, overlap=48):
+def letterbox(im, new_shape=(640, 640), color=(114, 114, 114)):
+    """
+    Resize and pad image while maintaining aspect ratio, adding neutral gray borders.
+    Returns:
+        im: padded image
+        r: scale ratio
+        (left, top): left and top padding in pixels
+    """
+    shape = im.shape[:2]  # current shape [height, width]
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
+
+    # Scale ratio (new / old)
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+
+    # Compute padding
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+
+    dw /= 2.0  # divide padding into 2 sides
+    dh /= 2.0
+
+    if shape[::-1] != new_unpad:  # resize
+        im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
+    return im, r, (left, top)
+
+
+def _generate_image_slices(image_array, slice_size=320, overlap=96):
     """
     Slices an image array into a sequential grid of size slice_size x slice_size
     with the specified overlap.
@@ -175,10 +205,10 @@ class ONNXYOLO:
             all_confidences = []
             all_class_ids = []
             
-            for tile_array, x_offset, y_offset in _generate_image_slices(img0, slice_size=320, overlap=48):
+            for tile_array, x_offset, y_offset in _generate_image_slices(img0, slice_size=320, overlap=96):
                 slice_h, slice_w = tile_array.shape[:2]
                 
-                img = cv2.resize(tile_array, (640, 640))
+                img, r, (left, top) = letterbox(tile_array, (640, 640))
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 img = img.astype(np.float32) / 255.0
                 img = np.transpose(img, (2, 0, 1))
@@ -206,10 +236,10 @@ class ONNXYOLO:
                     x2 = xc + w / 2
                     y2 = yc + h / 2
                     
-                    x1_global = x1 * (slice_w / 640.0) + x_offset
-                    y1_global = y1 * (slice_h / 640.0) + y_offset
-                    x2_global = x2 * (slice_w / 640.0) + x_offset
-                    y2_global = y2 * (slice_h / 640.0) + y_offset
+                    x1_global = ((x1 - left) / r) + x_offset
+                    y1_global = ((y1 - top) / r) + y_offset
+                    x2_global = ((x2 - left) / r) + x_offset
+                    y2_global = ((y2 - top) / r) + y_offset
                     
                     for i in range(len(boxes)):
                         all_boxes.append([x1_global[i], y1_global[i], x2_global[i], y2_global[i]])
@@ -233,7 +263,7 @@ class ONNXYOLO:
             
         else:
             # Standard single-frame fallback
-            img = cv2.resize(img0, (640, 640))
+            img, r, (left, top) = letterbox(img0, (640, 640))
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img = img.astype(np.float32) / 255.0
             img = np.transpose(img, (2, 0, 1))
@@ -261,14 +291,12 @@ class ONNXYOLO:
                 y1 = yc - h / 2
                 x2 = xc + w / 2
                 y2 = yc + h / 2
-                boxes = np.stack([x1, y1, x2, y2], axis=1)
                 
-                scale_x = w0 / 640.0
-                scale_y = h0 / 640.0
-                boxes[:, 0] *= scale_x
-                boxes[:, 2] *= scale_x
-                boxes[:, 1] *= scale_y
-                boxes[:, 3] *= scale_y
+                x1_orig = (x1 - left) / r
+                y1_orig = (y1 - top) / r
+                x2_orig = (x2 - left) / r
+                y2_orig = (y2 - top) / r
+                boxes = np.stack([x1_orig, y1_orig, x2_orig, y2_orig], axis=1)
             else:
                 boxes = np.empty((0, 4))
                 
@@ -321,8 +349,8 @@ CLASS_SPECIFIC_THRESHOLDS = {
 }
 
 CLASS_THRESHOLDS = {
-    "aphids": 0.40, "whitefly_leaf_damage": 0.45, "fruit_borer": 0.55, "tobacco_caterpillar": 0.45,
-    "yellow_thrips": 0.38, "broad_mites": 0.38, "invasive_black_thrips": 0.48, "mealybugs": 0.42,
+    "aphids": 0.28, "whitefly_leaf_damage": 0.28, "fruit_borer": 0.55, "tobacco_caterpillar": 0.45,
+    "yellow_thrips": 0.28, "broad_mites": 0.38, "invasive_black_thrips": 0.28, "mealybugs": 0.42,
     "leaf_curl_virus": 0.45, "bacterial_leaf_spot": 0.50, "cercospora_leaf_spot": 0.48, "powdery_mildew": 0.42
 }
 
@@ -1111,8 +1139,9 @@ def _detect_source_impl(source, bypass_ood=False):
                             "low_confidence": True,
                             "is_low_confidence": True
                         }
-
-                if top["confidence"] >= (PHASE1_MIN_CONF * 100):
+                # ── Unified threshold lookup (replaces scattered conditional branches) ──
+                eff_thresh = _resolve_conf_threshold(friendly_eng, top["raw_label"])
+                if top["confidence"] >= min(PHASE1_MIN_CONF * 100, eff_thresh):
                     if top["raw_label"] not in CLASS_NAMES:
                         return {
                             "success": False,
@@ -1126,10 +1155,8 @@ def _detect_source_impl(source, bypass_ood=False):
                     if custom_thresh is None:
                         custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(friendly_eng)
                     
-                    # ── Unified threshold lookup (replaces scattered conditional branches) ──
-                    eff_thresh = _resolve_conf_threshold(friendly_eng, top["raw_label"])
                     is_low = top["confidence"] < eff_thresh
-
+                    
                     phase1_result = {
                         "success":        True,
                         "top_detection":  top,
@@ -1299,7 +1326,9 @@ def _detect_source_impl(source, bypass_ood=False):
                             "is_low_confidence": True
                         }
 
-                if top["confidence"] >= 30:
+                # ── Unified threshold lookup (replaces scattered conditional branches) ──
+                eff_thresh = _resolve_conf_threshold(friendly_eng, mapped_raw)
+                if top["confidence"] >= min(30.0, eff_thresh):
                     if top["raw_label"] not in IP102_CLASS_MAPPING:
                         return {
                             "success": False,
@@ -1314,8 +1343,6 @@ def _detect_source_impl(source, bypass_ood=False):
                     if custom_thresh is None:
                         custom_thresh = CLASS_SPECIFIC_THRESHOLDS.get(friendly_eng)
 
-                    # ── Unified threshold lookup (replaces scattered conditional branches) ──
-                    eff_thresh = _resolve_conf_threshold(friendly_eng, mapped_raw)
                     is_low = top["confidence"] < eff_thresh
 
                     phase2_result = {
