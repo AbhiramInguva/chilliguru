@@ -8,12 +8,17 @@ Each phase runs in isolated try/except for fault tolerance.
 """
 
 import logging
-from pathlib import Path
+import os
+import re
+import tempfile
+import time
+import uuid
 import warnings
+from pathlib import Path
+
 import onnxruntime as ort
 import numpy as np
 import cv2
-import gc
 
 warnings.filterwarnings("ignore")
 
@@ -110,10 +115,11 @@ def _spatial_nms(boxes, scores, iou_threshold=0.45):
     """
     if len(boxes) == 0:
         return []
-    
-    boxes = np.array(boxes)
-    scores = np.array(scores)
-    
+
+    # asarray avoids copying when the caller already passes ndarrays
+    boxes = np.asarray(boxes)
+    scores = np.asarray(scores)
+
     x1 = boxes[:, 0]
     y1 = boxes[:, 1]
     x2 = boxes[:, 2]
@@ -143,6 +149,19 @@ def _spatial_nms(boxes, scores, iou_threshold=0.45):
         order = order[inds + 1]
         
     return keep
+
+
+def _preprocess_for_onnx(img):
+    """Letterbox to 640×640 and convert BGR uint8 → normalized NCHW float32.
+
+    Shared by the tiled (SAHI) and single-frame inference paths — previously
+    this block was duplicated in both.
+    """
+    img, r, (left, top) = letterbox(img, (640, 640))
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = img.astype(np.float32) / 255.0
+    img = np.transpose(img, (2, 0, 1))[None]
+    return img, r, (left, top)
 
 
 class ONNXYOLO:
@@ -193,7 +212,9 @@ class ONNXYOLO:
             if img0 is None:
                 raise ValueError(f"Could not read image: {source}")
         elif isinstance(source, np.ndarray):
-            img0 = source.copy()
+            # Read-only from here on — copying a multi-megapixel frame per
+            # inference call doubled peak memory for no benefit.
+            img0 = source
         else:
             raise ValueError(f"Unsupported source type: {type(source)}")
             
@@ -206,14 +227,8 @@ class ONNXYOLO:
             all_class_ids = []
             
             for tile_array, x_offset, y_offset in _generate_image_slices(img0, slice_size=320, overlap=96):
-                slice_h, slice_w = tile_array.shape[:2]
-                
-                img, r, (left, top) = letterbox(tile_array, (640, 640))
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                img = img.astype(np.float32) / 255.0
-                img = np.transpose(img, (2, 0, 1))
-                img = np.expand_dims(img, axis=0)
-                
+                img, r, (left, top) = _preprocess_for_onnx(tile_array)
+
                 outputs = self.session.run([self.output_name], {self.input_name: img})
                 output = outputs[0][0]
                 output = np.transpose(output, (1, 0))
@@ -263,16 +278,10 @@ class ONNXYOLO:
             
         else:
             # Standard single-frame fallback
-            img, r, (left, top) = letterbox(img0, (640, 640))
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = img.astype(np.float32) / 255.0
-            img = np.transpose(img, (2, 0, 1))
-            img = np.expand_dims(img, axis=0)
-            
+            img, r, (left, top) = _preprocess_for_onnx(img0)
+
             outputs = self.session.run([self.output_name], {self.input_name: img})
-            output = outputs[0]
-            output = output[0]
-            output = np.transpose(output, (1, 0))
+            output = np.transpose(outputs[0][0], (1, 0))
             
             boxes = output[:, :4]
             scores = output[:, 4:]
@@ -313,29 +322,9 @@ class ONNXYOLO:
             return [MockResult(boxes=mock_boxes, names=self.names)]
         
     def _nms(self, boxes, scores, iou_threshold):
-        if len(boxes) == 0:
-            return []
-        x1 = boxes[:, 0]
-        y1 = boxes[:, 1]
-        x2 = boxes[:, 2]
-        y2 = boxes[:, 3]
-        areas = (x2 - x1) * (y2 - y1)
-        order = scores.argsort()[::-1]
-        keep = []
-        while order.size > 0:
-            i = order[0]
-            keep.append(i)
-            xx1 = np.maximum(x1[i], x1[order[1:]])
-            yy1 = np.maximum(y1[i], y1[order[1:]])
-            xx2 = np.minimum(x2[i], x2[order[1:]])
-            yy2 = np.minimum(y2[i], y2[order[1:]])
-            w = np.maximum(0.0, xx2 - xx1)
-            h = np.maximum(0.0, yy2 - yy1)
-            inter = w * h
-            ovr = inter / (areas[i] + areas[order[1:]] - inter + 1e-8)
-            inds = np.where(ovr <= iou_threshold)[0]
-            order = order[inds + 1]
-        return keep
+        # Identical algorithm to the module-level _spatial_nms — delegate
+        # instead of maintaining a second copy.
+        return _spatial_nms(boxes, scores, iou_threshold)
 
 PHASE1_MODEL_PATH    = "weights/chilli_pest_model.onnx"
 PHASE2_MODEL_PATH    = "weights/ip102_model.onnx"
@@ -359,6 +348,21 @@ CLASS_THRESHOLDS = {
 # CONFIDENCE_THRESHOLD into a single dict-driven lookup so both Phase 1 and
 # Phase 2 use the same code path and we avoid duplicated branches.
 
+_THRESHOLD_KEYWORD_MAP = {
+    "fruit borer": "fruit_borer",
+    "armyworm":    "tobacco_caterpillar",
+    "aphid":       "aphids",
+    "whitefly":    "whitefly_leaf_damage",
+    "yellow thrips": "yellow_thrips",
+    "broad mites": "broad_mites",
+    "black thrips": "invasive_black_thrips",
+    "mealybug":    "mealybugs",
+    "leaf curl":   "leaf_curl_virus",
+    "bacterial":   "bacterial_leaf_spot",
+    "cercospora":  "cercospora_leaf_spot",
+    "powdery":     "powdery_mildew",
+}
+
 def _resolve_conf_threshold(friendly_eng: str, raw_label: str) -> float:
     """
     Return the effective percentage-scale confidence threshold for a label.
@@ -377,21 +381,7 @@ def _resolve_conf_threshold(friendly_eng: str, raw_label: str) -> float:
 
     # 2. Keyword-driven CLASS_THRESHOLDS
     lbl_lower = (friendly_eng + " " + raw_label).lower()
-    _keyword_map = {
-        "fruit borer": "fruit_borer",
-        "armyworm":    "tobacco_caterpillar",
-        "aphid":       "aphids",
-        "whitefly":    "whitefly_leaf_damage",
-        "yellow thrips": "yellow_thrips",
-        "broad mites": "broad_mites",
-        "black thrips": "invasive_black_thrips",
-        "mealybug":    "mealybugs",
-        "leaf curl":   "leaf_curl_virus",
-        "bacterial":   "bacterial_leaf_spot",
-        "cercospora":  "cercospora_leaf_spot",
-        "powdery":     "powdery_mildew",
-    }
-    for kw, key in _keyword_map.items():
+    for kw, key in _THRESHOLD_KEYWORD_MAP.items():
         if kw in lbl_lower:
             return CLASS_THRESHOLDS[key] * 100.0
 
@@ -412,7 +402,6 @@ def _load_expert_classifier():
 def prewarm_models():
     """Warm up/pre-warm local cascade models with a mock zero-matrix pass to clear startup spikes."""
     try:
-        import numpy as np
         log.info("prewarm_models_loading")
         p1 = _load_custom()
         p2 = _load_ip102_model()
@@ -440,10 +429,6 @@ def prewarm_models():
 def _save_to_shadow_dataset(source, label, confidence):
     """Write blocked or low-confidence detection images to shadow_dataset directory."""
     try:
-        import os, time, re, uuid
-        from pathlib import Path
-        import numpy as np
-        
         shadow_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   "static", "uploads", "shadow_dataset")
         os.makedirs(shadow_dir, exist_ok=True)
@@ -453,7 +438,6 @@ def _save_to_shadow_dataset(source, label, confidence):
             with open(str(source), "rb") as f:
                 image_bytes = f.read()
         elif isinstance(source, np.ndarray):
-            import cv2
             _, encoded_img = cv2.imencode(".jpg", source)
             image_bytes = encoded_img.tobytes()
             
@@ -481,11 +465,7 @@ def _apply_model3_sigmoid_activation(logits_dict):
     Treats each pest probability as an independent binary classification score
     rather than a competitive Softmax distribution.
     """
-    import numpy as np
-    probabilities = {}
-    for name, logit in logits_dict.items():
-        probabilities[name] = 1.0 / (1.0 + np.exp(-logit))
-    return probabilities
+    return {name: 1.0 / (1.0 + np.exp(-logit)) for name, logit in logits_dict.items()}
 
 # ── 18 class labels from VIT-AP model (Phase 1) ────────────────────────────────
 CLASS_NAMES = [
@@ -546,9 +526,10 @@ IP102_CLASS_MAPPING = {
     "powdery_mildew":      ("powdery_mildew", "powdery_mildew", "disease"),
 }
 
-def _get_friendly_name(raw_label):
-    """Map raw model label → (friendly English name, Telugu name, type)."""
-    mapping = {
+# Built once at module load — _get_friendly_name is called several times per
+# detection box, so rebuilding this literal on every call wasted CPU and
+# allocator churn.
+_FRIENDLY_NAME_MAP = {
         "Black Thrips-Leafs":                    ("Black Thrips – Leaf Damage",        "నల్ల తుమ్మెద పురుగు ఆకు నష్టం",      "pest"),
         "Black Thrips-Pest":                     ("Black Thrips",                       "నల్ల తుమ్మెద పురుగు",               "pest"),
         "Collectotrichum spp (Anthracnose)":     ("Anthracnose (Fruit Rot)",            "యాంత్రాక్నోస్ / పండు కుళ్ళు తెగులు", "disease"),
@@ -581,9 +562,11 @@ def _get_friendly_name(raw_label):
         "bacterial_leaf_spot":                   ("Bacterial Leaf Spot",                "బ్యాక్టీరియల్ ఆకు మచ్చ తెగులు",      "disease"),
         "cercospora_leaf_spot":                  ("Cercospora Leaf Spot",               "సెర్కోస్పోరా ఆకు మచ్చ తెగులు",       "disease"),
         "powdery_mildew":                        ("Powdery Mildew",                     "బూడిద తెగులు",                      "disease"),
-    }
-    english, telugu, kind = mapping.get(raw_label, (raw_label, "", "unknown"))
-    return english, telugu, kind
+}
+
+def _get_friendly_name(raw_label):
+    """Map raw model label → (friendly English name, Telugu name, type)."""
+    return _FRIENDLY_NAME_MAP.get(raw_label, (raw_label, "", "unknown"))
 
 # ── Pest / disease info for all 18 classes ───────────────────────────────────
 PEST_INFO = {
@@ -777,6 +760,243 @@ def _resolve_label(raw_label, cls_id):
 def _sev(c):
     return "High" if c >= 80 else ("Medium" if c >= 50 else "Low (not very sure)")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Leaf morphology analysis — curl direction + leaf-age stage
+#
+# Pure-geometry / colour-science heuristics (no extra model weights). These
+# enrich curl/virus/thrips/mite detections with the structural cues the
+# agronomic prompt already references:
+#   • Upward (adaxial) cupping       -> Leaf Curl Virus signature
+#   • Downward "inverted-boat" curl  -> Broad Mite signature
+# plus a leaf-age estimate (young / adult / old) from chlorophyll & texture,
+# and a "juvenile mimicry" flag: a structurally MATURE leaf that presents
+# juvenile size/colour — a recognised stunting symptom of viral infection.
+#
+# Every value is a heuristic estimate from a single 2-D frame, NOT a depth
+# measurement; thresholds are tuned for typical close-up field photos and the
+# whole module is wrapped so a failure can never break detection.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_LEAF_RELEVANT_KEYWORDS = (
+    "curl", "curling", "leaf", "thrips", "mite", "virus", "mosaic", "healthy",
+)
+
+_CURL_TELUGU = {
+    "upward":   "ఆకు పైకి ముడుచుకోవడం (Upward Cupping)",
+    "downward": "ఆకు కిందికి ముడుచుకోవడం (Downward Inverted-Boat)",
+    "flat":     "ఆకు చదునుగా ఉంది (Flat / No curl)",
+    "unknown":  "",
+}
+
+_AGE_ORDER = {"young": 0, "adult": 1, "old": 2}
+
+
+def _is_leaf_relevant(raw_label) -> bool:
+    lbl = str(raw_label).lower()
+    return any(k in lbl for k in _LEAF_RELEVANT_KEYWORDS)
+
+
+def _segment_leaf_mask(bgr):
+    """Boolean mask isolating green→yellow foliage from background."""
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    # Healthy green through yellow-green (OpenCV hue 0-179)
+    foliage = (h >= 20) & (h <= 95) & (s >= 40) & (v >= 40)
+    # Yellowing / senescent lamina
+    senescent = (h >= 10) & (h < 25) & (s >= 60) & (v >= 90)
+    return foliage | senescent
+
+
+def analyze_leaf_morphology(source):
+    """
+    Estimate leaf curl direction and leaf-age stage from one BGR frame.
+
+    Returns a dict (keys always present; defaults to 'unknown'):
+        curl_direction   : 'upward' | 'downward' | 'flat' | 'unknown'
+        curl_confidence  : float 0-100
+        curl_telugu      : str
+        leaf_age         : 'young' | 'adult' | 'old' | 'unknown'
+        age_confidence   : float 0-100
+        juvenile_mimicry : bool   (mature leaf presenting juvenile traits)
+        note             : human-readable summary
+        features         : raw measured features (for transparency/debug)
+    """
+    out = {
+        "curl_direction": "unknown", "curl_confidence": 0.0, "curl_telugu": "",
+        "leaf_age": "unknown", "age_confidence": 0.0,
+        "juvenile_mimicry": False, "note": "", "features": {},
+    }
+    try:
+        if isinstance(source, np.ndarray):
+            bgr = source
+        elif isinstance(source, (str, Path)):
+            bgr = cv2.imread(str(source))
+        else:
+            bgr = None
+        if bgr is None or bgr.size == 0:
+            return out
+
+        H, W = bgr.shape[:2]
+        frame_area = float(H * W)
+
+        mask = _segment_leaf_mask(bgr)
+        if int(mask.sum()) < 0.02 * frame_area:
+            out["note"] = "Leaf region too small or not green enough to analyse curl reliably."
+            return out
+
+        mask_u8 = cv2.morphologyEx((mask.astype(np.uint8)) * 255,
+                                   cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return out
+        cnt = max(contours, key=cv2.contourArea)
+        area = float(cv2.contourArea(cnt))
+        if area < 0.02 * frame_area:
+            return out
+
+        # ── Shape descriptors ────────────────────────────────────────────────
+        hull_area = float(cv2.contourArea(cv2.convexHull(cnt))) or 1.0
+        solidity = area / hull_area              # cup = compact/high; boat = lower
+        if len(cnt) >= 5:
+            (_, (axis_a, axis_b), _) = cv2.fitEllipse(cnt)
+        else:
+            axis_a, axis_b = 1.0, 1.0
+        eccentricity = float(max(axis_a, axis_b) / (min(axis_a, axis_b) + 1e-6))
+
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+
+        # Centre-vs-margin brightness (adaxial cup lifts margins, raising the
+        # bright leaf core relative to shaded edges).
+        core = cv2.erode(mask_u8, np.ones((15, 15), np.uint8)).astype(bool)
+        margin = mask & (~core)
+        center_bright = float(gray[core].mean()) if core.any() else float(gray[mask].mean())
+        margin_bright = float(gray[margin].mean()) if margin.any() else center_bright
+        center_margin_ratio = center_bright / (margin_bright + 1e-6)
+
+        # Central midrib ridge: brightness across the leaf width. A bright middle
+        # third with darker flanks = raised midrib folding the lamina down.
+        g = gray.copy()
+        g[~mask] = np.nan
+        prof_x = np.nanmean(g, axis=0)
+        cols = np.where(~np.isnan(prof_x))[0]
+        ridge_ratio = 1.0
+        if cols.size > 9:
+            x0, x1 = int(cols.min()), int(cols.max())
+            third = max(1, (x1 - x0) // 3)
+            mid_m = np.nanmean(prof_x[x0 + third:x1 - third])
+            side_m = np.nanmean(np.concatenate([prof_x[x0:x0 + third], prof_x[x1 - third:x1]]))
+            if np.isfinite(mid_m) and np.isfinite(side_m) and side_m > 0:
+                ridge_ratio = float(mid_m / side_m)
+
+        # ── Curl scoring (upward vs downward) ────────────────────────────────
+        upward_score = 0.0
+        if center_margin_ratio > 1.04:
+            upward_score += min((center_margin_ratio - 1.0) * 180.0, 60.0)
+        if solidity > 0.82:
+            upward_score += min((solidity - 0.82) * 200.0, 35.0)
+
+        downward_score = 0.0
+        if ridge_ratio > 1.04:
+            downward_score += min((ridge_ratio - 1.0) * 180.0, 60.0)
+        if eccentricity > 1.8:
+            downward_score += min((eccentricity - 1.8) * 25.0, 40.0)
+
+        if max(upward_score, downward_score) < 12.0:
+            curl, curl_conf = "flat", float(round(max(0.0, 40.0 - max(upward_score, downward_score) * 2), 1))
+        elif upward_score >= downward_score:
+            curl, curl_conf = "upward", float(round(min(upward_score, 95.0), 1))
+        else:
+            curl, curl_conf = "downward", float(round(min(downward_score, 95.0), 1))
+
+        # ── Leaf-age estimation ──────────────────────────────────────────────
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        hh, ss, vv = hsv[..., 0].astype(np.float32), hsv[..., 1].astype(np.float32), hsv[..., 2].astype(np.float32)
+        mean_s = float(ss[mask].mean())
+        mean_v = float(vv[mask].mean())
+        yellowing = float((hh[mask] < 25).mean())     # fraction of senescent hue
+        texture = float(np.var(cv2.Laplacian(gray, cv2.CV_32F)[mask]))  # vein/cuticle maturity
+        rel_size = area / frame_area
+
+        # Size + colour cue (chlorophyll density: young = lighter, less saturated)
+        if rel_size < 0.16 and mean_v > 110 and mean_s < 130:
+            size_age = "young"
+        elif yellowing > 0.45 or (mean_s < 90 and mean_v > 150):
+            size_age = "old"
+        else:
+            size_age = "adult"
+
+        # Structural cue (venation/cuticle texture matures with leaf age)
+        if texture < 120:
+            structure_age = "young"
+        elif texture > 400 or yellowing > 0.40:
+            structure_age = "old"
+        else:
+            structure_age = "adult"
+
+        # Structure drives the reported maturity; mimicry = juvenile colour/size
+        # on a structurally mature leaf (classic viral stunting tell).
+        leaf_age = structure_age
+        juvenile_mimicry = (size_age == "young" and _AGE_ORDER[structure_age] >= 1)
+        agreement = (size_age == structure_age)
+        age_conf = float(round(72.0 if agreement else 55.0, 1))
+
+        # ── Compose note ─────────────────────────────────────────────────────
+        bits = []
+        if curl == "upward":
+            bits.append("Upward/abaxial cupping detected (consistent with Leaf Curl Virus pressure).")
+        elif curl == "downward":
+            bits.append("Downward inverted-boat curling detected (consistent with Broad Mite feeding).")
+        elif curl == "flat":
+            bits.append("Leaf appears largely flat — no strong curl signature.")
+        bits.append(f"Leaf-age stage: {leaf_age}.")
+        if juvenile_mimicry:
+            bits.append("Maturity check: this leaf is structurally adult but shows juvenile size/colour — "
+                        "a stunting/distortion pattern typical of early viral infection.")
+
+        out.update({
+            "curl_direction": curl,
+            "curl_confidence": curl_conf,
+            "curl_telugu": _CURL_TELUGU.get(curl, ""),
+            "leaf_age": leaf_age,
+            "age_confidence": age_conf,
+            "juvenile_mimicry": bool(juvenile_mimicry),
+            "note": " ".join(bits),
+            "features": {
+                "solidity": round(solidity, 3),
+                "eccentricity": round(eccentricity, 3),
+                "center_margin_ratio": round(center_margin_ratio, 3),
+                "midrib_ridge_ratio": round(ridge_ratio, 3),
+                "yellowing_fraction": round(yellowing, 3),
+                "texture_variance": round(texture, 1),
+                "relative_size": round(rel_size, 3),
+                "size_cue_age": size_age,
+                "structure_cue_age": structure_age,
+            },
+        })
+        return out
+    except Exception as exc:
+        log.warning("leaf_morphology_failed", extra={"data": {"error": str(exc)}})
+        return out
+
+
+def _attach_morphology(result, source):
+    """Attach leaf morphology to a successful curl/leaf-related detection."""
+    try:
+        if not isinstance(result, dict):
+            return result
+        top = result.get("top_detection")
+        if not isinstance(top, dict):
+            return result
+        if not _is_leaf_relevant(top.get("raw_label", "") or top.get("label", "")):
+            return result
+        morph = analyze_leaf_morphology(source)
+        if morph.get("curl_direction") != "unknown" or morph.get("leaf_age") != "unknown":
+            top["morphology"] = morph
+    except Exception as exc:
+        log.warning("morphology_attach_failed", extra={"data": {"error": str(exc)}})
+    return result
+
 def _differentiate_lookalike_pests(detections):
     if len(detections) < 2:
         return detections
@@ -809,28 +1029,25 @@ def _differentiate_lookalike_pests(detections):
             "aspect_ratio": aspect_ratio,
         })
         
+    # Vectorized pairwise centre distances (replaces the per-pair Python loop)
+    centers = np.array([[f["cx"], f["cy"]] for f in features])
+
     for i, f1 in enumerate(features):
         d = f1["detection"]
-        raw_label = d.get("raw_label", "")
-        
+        raw_lower = d.get("raw_label", "").lower()
+
         # We only care about look-alike pests: Whiteflies, Aphids, Thrips
-        is_thrips = any(k in raw_label.lower() for k in ["thrips", "black thrips", "yellow thrips"])
-        is_aphids = any(k in raw_label.lower() for k in ["aphid", "aphids"])
-        is_whitefly = any(k in raw_label.lower() for k in ["whitefly", "white fly"])
-        
+        is_thrips = "thrips" in raw_lower
+        is_aphids = "aphid" in raw_lower
+        is_whitefly = "whitefly" in raw_lower or "white fly" in raw_lower
+
         if not (is_thrips or is_aphids or is_whitefly):
             adjusted_detections.append(d)
             continue
-            
+
         # Calculate neighbor list and spatial density
-        neighbors = []
-        for j, f2 in enumerate(features):
-            if i == j:
-                continue
-            dist = np.sqrt((f1["cx"] - f2["cx"])**2 + (f1["cy"] - f2["cy"])**2)
-            if dist < 250.0:  # neighborhood radius
-                neighbors.append(f2)
-                
+        dists = np.hypot(centers[:, 0] - f1["cx"], centers[:, 1] - f1["cy"])
+        neighbors = [features[j] for j in np.where(dists < 250.0)[0] if j != i]
         density = len(neighbors)
         
         # Calculate grouping shape (circularity vs linearity / vein alignment)
@@ -854,9 +1071,6 @@ def _differentiate_lookalike_pests(detections):
             else:
                 grouping_shape = "circular"  # circular clustering
                 
-        # Differentiate based on metrics
-        confidence = d["confidence"]
-        
         # Refinement rules:
         if is_thrips:
             # Thrips should have higher aspect ratio and linear shape
@@ -880,7 +1094,7 @@ def _differentiate_lookalike_pests(detections):
                 
         elif is_whitefly:
             # Whitefly should not be extremely large
-            if "damage" not in raw_label.lower() and f1["area"] > 8000:
+            if "damage" not in raw_lower and f1["area"] > 8000:
                 # Whitefly is small. An extremely large box is likely not a whitefly
                 d["confidence"] = max(d["confidence"] - 15.0, 10.0)
                 log.info("Spatial Descriptor: Downgrading Whitefly due to excessively large box area")
@@ -1030,12 +1244,21 @@ def _detect_source_impl(source, bypass_ood=False):
             names_map = results[0].names
 
             if boxes is not None and len(boxes) > 0:
+                # Decode the source image once for all boxes (was previously
+                # re-read from disk inside the per-box loop).
+                if isinstance(source, (str, Path)):
+                    cv_img = cv2.imread(str(source))
+                elif isinstance(source, np.ndarray):
+                    cv_img = source
+                else:
+                    cv_img = None
+
                 detections = []
                 for box in boxes:
                     cls_id     = int(box.cls[0])
                     model_name = names_map.get(cls_id, str(cls_id))
                     confidence = float(box.conf[0]) * 100.0
-                    
+
                     # 2. Model 2 (YOLO) raw boundary coordinates
                     try:
                         xmin, ymin, xmax, ymax = map(int, box.xyxy[0])
@@ -1047,19 +1270,10 @@ def _detect_source_impl(source, bypass_ood=False):
                         "xmax": xmax,
                         "ymax": ymax
                     }
-                    
+
                     # 3. Sub-routine using OpenCV to slice the image buffer
                     cropped_patch = None
                     try:
-                        import cv2
-                        import numpy as np
-                        if isinstance(source, (str, Path)):
-                            cv_img = cv2.imread(str(source))
-                        elif isinstance(source, np.ndarray):
-                            cv_img = source
-                        else:
-                            cv_img = None
-                        
                         if cv_img is not None:
                             cropped_patch = cv_img[ymin:ymax, xmin:xmax]
                     except Exception as cv_err:
@@ -1072,7 +1286,6 @@ def _detect_source_impl(source, bypass_ood=False):
                         if expert_model is not None and cropped_patch is not None:
                             # Treat each pest probability as an independent Sigmoid score
                             # Let's generate logits based on raw confidence: logit = log(p / (1 - p))
-                            import numpy as np
                             p_raw = min(max(confidence / 100.0, 0.01), 0.99)
                             logit_val = float(np.log(p_raw / (1.0 - p_raw)))
                             
@@ -1185,7 +1398,7 @@ def _detect_source_impl(source, bypass_ood=False):
                     "confidence": top_det["confidence"],
                     "threshold":  eff_thresh,
                 }})
-                return phase1_result
+                return _attach_morphology(phase1_result, source)
 
         # ── Dual-model consensus check (only for ambiguous / borderline cases) ──
         if top_det and ("fruit borer" in top_det.get("label", "").lower() or "fruit borer" in top_det.get("raw_label", "").lower()):
@@ -1248,7 +1461,7 @@ def _detect_source_impl(source, bypass_ood=False):
             except Exception as consensus_err:
                 log.error("consensus_check_error", extra={"data": {"error_message": str(consensus_err)}})
 
-        return phase1_result
+        return _attach_morphology(phase1_result, source)
 
     # ── PHASE 2: IP102 Fallback Model ─────────────────────────────────────────
     phase2_result = None
@@ -1358,7 +1571,7 @@ def _detect_source_impl(source, bypass_ood=False):
         log.error("phase2_inference_error", extra={"data": {"error_message": str(e)}})
 
     if phase2_result and phase2_result["success"]:
-        return phase2_result
+        return _attach_morphology(phase2_result, source)
 
     # ── PHASE 3: Generic YOLOv8n Anomaly Rejection ────────────────────────────
     phase3_result = None
@@ -1449,8 +1662,6 @@ def detect_from_memory(image_bytes: bytes, bypass_ood=False):
         return _detect_source(image_bytes, bypass_ood=bypass_ood)
     # ── Attempt in-memory decode ──────────────────────────────────────────────
     try:
-        import numpy as np
-        import cv2
         nparr     = np.frombuffer(image_bytes, np.uint8)
         img_array = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img_array is None:
@@ -1464,7 +1675,6 @@ def detect_from_memory(image_bytes: bytes, bypass_ood=False):
                     extra={"data": {"reason": str(decode_exc)}})
 
     # ── Safe fallback: write one temp file and call detect() ──────────────────
-    import tempfile, os
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:

@@ -1280,26 +1280,38 @@ ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interven
     };
   }
 
+  function escapeHtml(value) {
+    if (value == null) return '';
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   function updateStreamingDisplay(textNode, rawText) {
     const sections = parseAdvisorySections(rawText);
 
     if (sections.climate || sections.organic || sections.inorganic) {
+      // Escape untrusted model output before injecting (XSS guard).
+      const body = (str) => escapeHtml(str).replace(/\n/g, '<br>');
       textNode.innerHTML = `
         <div class="advisory-stream-container">
           ${sections.climate ? `
           <div class="advisory-card climate-card">
             <div class="card-header">🌦️ Climate-Pest Correlation Analysis</div>
-            <div class="card-body">${sections.climate}</div>
+            <div class="card-body">${body(sections.climate)}</div>
           </div>` : ''}
           ${sections.organic ? `
           <div class="advisory-card organic-card">
             <div class="card-header">🌿 Biological & Organic Interventions</div>
-            <div class="card-body">${sections.organic}</div>
+            <div class="card-body">${body(sections.organic)}</div>
           </div>` : ''}
           ${sections.inorganic ? `
           <div class="advisory-card inorganic-card">
             <div class="card-header">🧪 Targeted Chemical Interventions</div>
-            <div class="card-body">${sections.inorganic}</div>
+            <div class="card-body">${body(sections.inorganic)}</div>
           </div>` : ''}
         </div>
       `;

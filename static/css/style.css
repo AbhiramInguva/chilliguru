@@ -579,6 +579,39 @@ header {
   margin-bottom: 14px;
 }
 
+/* ── Leaf curl / leaf-age morphology strip ──────────────────────────────── */
+.morph-strip {
+  margin: 4px 0 14px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.04);
+  border-left: 3px solid var(--e-700, #2e7d32);
+  border-radius: 8px;
+  font-size: 14px;
+}
+.morph-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0;
+}
+.morph-key { font-weight: 700; color: var(--e-700, #2e7d32); }
+.morph-val { font-weight: 600; }
+.morph-telugu {
+  font-size: 13px;
+  color: var(--e-700, #2e7d32);
+  opacity: 0.85;
+  margin: 2px 0 4px;
+}
+.morph-mimicry {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: rgba(214, 158, 46, 0.16);
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
 .det-confidence {
   font-size: 17px;
   font-weight: 800;

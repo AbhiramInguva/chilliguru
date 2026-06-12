@@ -8,7 +8,6 @@ import sys
 import tempfile
 import threading
 import time
-import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 import requests
@@ -141,7 +140,10 @@ REGIONAL_TRANSLATION_MAP = {
 def to_core_class(label_or_name):
     if not label_or_name:
         return None
-    lbl = str(label_or_name).lower()
+    # Normalize underscores so Phase-2 labels like "yellow_thrips" match the
+    # space-separated keywords below (previously they fell through to the
+    # generic "thrips" rule and were misreported as invasive black thrips).
+    lbl = str(label_or_name).lower().replace("_", " ")
     if "black thrips" in lbl or "invasive" in lbl:
         return "invasive_black_thrips"
     if "yellow thrips" in lbl:
@@ -154,7 +156,7 @@ def to_core_class(label_or_name):
         return "whitefly_leaf_damage"
     if "fruit borer" in lbl or "helicoverpa" in lbl or "borer" in lbl:
         return "fruit_borer"
-    if "armyworm" in lbl or "tobaccocaterpillar" in lbl or "tobacco_caterpillar" in lbl or "spodoptera" in lbl:
+    if "armyworm" in lbl or "tobaccocaterpillar" in lbl or "tobacco caterpillar" in lbl or "spodoptera" in lbl:
         return "tobacco_caterpillar"
     if "red mites" in lbl or "broad mites" in lbl or "broad_mites" in lbl or "mites" in lbl:
         return "broad_mites"
@@ -224,7 +226,18 @@ _IMAGE_SIGNATURES = [
 ]
 
 app = Flask(__name__, static_folder="static")
-CORS(app)
+
+# ── CORS: restrict to explicitly allowed origins ──────────────────────────────
+# Previously CORS(app) allowed every origin to call every endpoint (including
+# the paid Groq-backed routes). Set CORS_ALLOWED_ORIGINS to a comma-separated
+# list in production; defaults to localhost for local testing.
+_cors_origins = [
+    o.strip() for o in os.environ.get(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:8080,http://127.0.0.1:8080",
+    ).split(",") if o.strip()
+]
+CORS(app, resources={r"/*": {"origins": _cors_origins}})
 
 # ── Shadow dataset directory (created once at startup) ────────────────────────
 SHADOW_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -249,10 +262,17 @@ def rate_limit_exceeded(e):
 _hf_client = None
 _hf_connect_error = None
 _hf_initialized = False
+_hf_init_lock = threading.Lock()
 
 def get_hf_client():
     global _hf_client, _hf_connect_error, _hf_initialized
-    if not _hf_initialized:
+    if _hf_initialized:
+        return _hf_client
+    # Double-checked locking: prevents two concurrent first requests from both
+    # paying the (slow, network-bound) Gradio connect.
+    with _hf_init_lock:
+        if _hf_initialized:
+            return _hf_client
         log.info("hf_connect_start")
         try:
             hf_token = os.environ.get("HF_TOKEN")
@@ -270,7 +290,6 @@ def get_hf_client():
     return _hf_client
 
 def get_hf_connect_error():
-    global _hf_connect_error
     return _hf_connect_error
 
 # ── Circuit Breaker state ─────────────────────────────────────────────────────
@@ -338,7 +357,6 @@ def call_hf_detector(image_bytes):
         parsed_result = result
         if isinstance(result, str):
             try:
-                import json
                 parsed_result = json.loads(result)
             except Exception:
                 pass
@@ -543,6 +561,87 @@ def health():
         "groq_ready": bool(os.getenv("GROQ_API_KEY", "")),
     })
 
+# ── Regional pest-risk rule table (built once at module load) ─────────────────
+# Each pest has ordered (condition, level, description) tiers — the first tier
+# whose condition matches the current temperature/humidity wins. Previously
+# this logic lived as a ~170-line closure recreated on every request.
+_RISK_LEVEL_ORDER = {"Critical": 0, "High": 1, "Moderate": 2, "Low": 3}
+
+_RISK_RULES = [
+    ("invasive_black_thrips", "Invasive Black Thrips", "నల్ల తామర పురుగు", [
+        (lambda t, h: 20.0 <= t <= 33.0 and h < 55.0, "Critical",
+         "Warm and dry conditions are highly optimal for Invasive Black Thrips expansion."),
+        (lambda t, h: 18.0 <= t <= 35.0 and h < 65.0, "High",
+         "Favorable conditions for thrips activity. Monitor leaf undersides."),
+        (lambda t, h: 15.0 <= t <= 38.0, "Moderate",
+         "Moderate thrips activity. Keep field borders clean."),
+    ]),
+    ("aphids", "Aphids", "పేను పురుగు", [
+        (lambda t, h: t < 26.0 and h > 65.0, "High",
+         "Cooler temperatures and high humidity promote rapid aphid colonization."),
+        (lambda t, h: t < 30.0 and h > 50.0, "Moderate",
+         "Moderate risk of aphids. Look for ants or honey-dew deposits."),
+    ]),
+    ("whitefly_leaf_damage", "Whitefly", "తెల్ల ఈగ", [
+        (lambda t, h: 26.0 <= t <= 38.0 and h > 75.0, "Critical",
+         "Hot and humid microclimate triggers massive whitefly outbreak."),
+        (lambda t, h: 24.0 <= t <= 40.0 and h > 60.0, "High",
+         "High risk of whitefly migration. Yellow sticky traps recommended."),
+        (lambda t, h: 20.0 <= t <= 42.0, "Moderate",
+         "Moderate whitefly presence. Inspect shoots regularly."),
+    ]),
+    ("broad_mites", "Broad Mites", "ఎర్ర సాలె పురుగు", [
+        (lambda t, h: t > 33.0 and h < 45.0, "Critical",
+         "Very hot and dry weather causes rapid broad mite infestation cycles."),
+        (lambda t, h: t > 30.0 and h < 55.0, "High",
+         "High temperature and dry wind favor mite propagation."),
+        (lambda t, h: t > 25.0, "Moderate",
+         "Moderate risk. Overhead irrigation can suppress mite build-up."),
+    ]),
+    ("fruit_borer", "Fruit Borer", "పండు తొలిచే పురుగు", [
+        (lambda t, h: 24.0 <= t <= 35.0 and h > 65.0, "High",
+         "Warm, humid conditions speed up egg-hatching and fruit borer damage."),
+        (lambda t, h: 20.0 <= t <= 38.0, "Moderate",
+         "Moderate risk of fruit borer. Check for bored entry holes in fruits."),
+    ]),
+    ("tobacco_caterpillar", "Tobacco Caterpillar", "గొంగళి పురుగు", [
+        (lambda t, h: 25.0 <= t <= 36.0 and h > 70.0, "High",
+         "High humidity and temperature increase risk of Spodoptera caterpillar activity."),
+        (lambda t, h: 22.0 <= t <= 38.0, "Moderate",
+         "Moderate threat. Watch for skeletonized leaf patches."),
+    ]),
+    ("yellow_thrips", "Yellow Thrips", "తామర పురుగు", [
+        (lambda t, h: 20.0 <= t <= 32.0 and h < 60.0, "High",
+         "Favorable dry temperature range for yellow thrips feeding on new leaves."),
+        (lambda t, h: 18.0 <= t <= 36.0, "Moderate",
+         "Moderate risk. Upward leaf curling might begin."),
+    ]),
+    ("mealybugs", "Mealybugs", "పిండి పురుగు", [
+        (lambda t, h: t > 25.0 and h > 60.0, "High",
+         "Warmth and humidity favor white cottony mealybug cluster formation."),
+        (lambda t, h: t > 20.0, "Moderate",
+         "Moderate risk. Prune heavily infested shoots."),
+    ]),
+]
+
+
+def calculate_risks(t, h):
+    risks = []
+    for pest, label, telugu, tiers in _RISK_RULES:
+        for cond, level, description in tiers:
+            if cond(t, h):
+                risks.append({
+                    "pest": pest,
+                    "label": label,
+                    "telugu": telugu,
+                    "level": level,
+                    "description": description,
+                })
+                break
+    risks.sort(key=lambda r: _RISK_LEVEL_ORDER.get(r["level"], 4))
+    return risks
+
+
 @app.route("/api/regional-risk")
 def regional_risk():
     try:
@@ -566,180 +665,6 @@ def regional_risk():
                 humidity = float(current["relative_humidity_2m"])
     except Exception as e:
         log.warning("open_meteo_api_error", extra={"data": {"error": str(e)}})
-
-    def calculate_risks(t, h):
-        risks = []
-        # 1. Invasive Black Thrips
-        if 20.0 <= t <= 33.0 and h < 55.0:
-            risks.append({
-                "pest": "invasive_black_thrips",
-                "label": "Invasive Black Thrips",
-                "telugu": "నల్ల తామర పురుగు",
-                "level": "Critical",
-                "description": "Warm and dry conditions are highly optimal for Invasive Black Thrips expansion."
-            })
-        elif 18.0 <= t <= 35.0 and h < 65.0:
-            risks.append({
-                "pest": "invasive_black_thrips",
-                "label": "Invasive Black Thrips",
-                "telugu": "నల్ల తామర పురుగు",
-                "level": "High",
-                "description": "Favorable conditions for thrips activity. Monitor leaf undersides."
-            })
-        elif 15.0 <= t <= 38.0:
-            risks.append({
-                "pest": "invasive_black_thrips",
-                "label": "Invasive Black Thrips",
-                "telugu": "నల్ల తామర పురుగు",
-                "level": "Moderate",
-                "description": "Moderate thrips activity. Keep field borders clean."
-            })
-
-        # 2. Aphids
-        if t < 26.0 and h > 65.0:
-            risks.append({
-                "pest": "aphids",
-                "label": "Aphids",
-                "telugu": "పేను పురుగు",
-                "level": "High",
-                "description": "Cooler temperatures and high humidity promote rapid aphid colonization."
-            })
-        elif t < 30.0 and h > 50.0:
-            risks.append({
-                "pest": "aphids",
-                "label": "Aphids",
-                "telugu": "పేను పురుగు",
-                "level": "Moderate",
-                "description": "Moderate risk of aphids. Look for ants or honey-dew deposits."
-            })
-
-        # 3. Whitefly
-        if 26.0 <= t <= 38.0 and h > 75.0:
-            risks.append({
-                "pest": "whitefly_leaf_damage",
-                "label": "Whitefly",
-                "telugu": "తెల్ల ఈగ",
-                "level": "Critical",
-                "description": "Hot and humid microclimate triggers massive whitefly outbreak."
-            })
-        elif 24.0 <= t <= 40.0 and h > 60.0:
-            risks.append({
-                "pest": "whitefly_leaf_damage",
-                "label": "Whitefly",
-                "telugu": "తెల్ల ఈగ",
-                "level": "High",
-                "description": "High risk of whitefly migration. Yellow sticky traps recommended."
-            })
-        elif 20.0 <= t <= 42.0:
-            risks.append({
-                "pest": "whitefly_leaf_damage",
-                "label": "Whitefly",
-                "telugu": "తెల్ల ఈగ",
-                "level": "Moderate",
-                "description": "Moderate whitefly presence. Inspect shoots regularly."
-            })
-
-        # 4. Broad Mites / Red Mites
-        if t > 33.0 and h < 45.0:
-            risks.append({
-                "pest": "broad_mites",
-                "label": "Broad Mites",
-                "telugu": "ఎర్ర సాలె పురుగు",
-                "level": "Critical",
-                "description": "Very hot and dry weather causes rapid broad mite infestation cycles."
-            })
-        elif t > 30.0 and h < 55.0:
-            risks.append({
-                "pest": "broad_mites",
-                "label": "Broad Mites",
-                "telugu": "ఎర్ర సాలె పురుగు",
-                "level": "High",
-                "description": "High temperature and dry wind favor mite propagation."
-            })
-        elif t > 25.0:
-            risks.append({
-                "pest": "broad_mites",
-                "label": "Broad Mites",
-                "telugu": "ఎర్ర సాలె పురుగు",
-                "level": "Moderate",
-                "description": "Moderate risk. Overhead irrigation can suppress mite build-up."
-            })
-
-        # 5. Fruit Borer
-        if 24.0 <= t <= 35.0 and h > 65.0:
-            risks.append({
-                "pest": "fruit_borer",
-                "label": "Fruit Borer",
-                "telugu": "పండు తొలిచే పురుగు",
-                "level": "High",
-                "description": "Warm, humid conditions speed up egg-hatching and fruit borer damage."
-            })
-        elif 20.0 <= t <= 38.0:
-            risks.append({
-                "pest": "fruit_borer",
-                "label": "Fruit Borer",
-                "telugu": "పండు తొలిచే పురుగు",
-                "level": "Moderate",
-                "description": "Moderate risk of fruit borer. Check for bored entry holes in fruits."
-            })
-
-        # 6. Tobacco Caterpillar
-        if 25.0 <= t <= 36.0 and h > 70.0:
-            risks.append({
-                "pest": "tobacco_caterpillar",
-                "label": "Tobacco Caterpillar",
-                "telugu": "గొంగళి పురుగు",
-                "level": "High",
-                "description": "High humidity and temperature increase risk of Spodoptera caterpillar activity."
-            })
-        elif 22.0 <= t <= 38.0:
-            risks.append({
-                "pest": "tobacco_caterpillar",
-                "label": "Tobacco Caterpillar",
-                "telugu": "గొంగళి పురుగు",
-                "level": "Moderate",
-                "description": "Moderate threat. Watch for skeletonized leaf patches."
-            })
-
-        # 7. Yellow Thrips
-        if 20.0 <= t <= 32.0 and h < 60.0:
-            risks.append({
-                "pest": "yellow_thrips",
-                "label": "Yellow Thrips",
-                "telugu": "తామర పురుగు",
-                "level": "High",
-                "description": "Favorable dry temperature range for yellow thrips feeding on new leaves."
-            })
-        elif 18.0 <= t <= 36.0:
-            risks.append({
-                "pest": "yellow_thrips",
-                "label": "Yellow Thrips",
-                "telugu": "తామర పురుగు",
-                "level": "Moderate",
-                "description": "Moderate risk. Upward leaf curling might begin."
-            })
-
-        # 8. Mealybugs
-        if t > 25.0 and h > 60.0:
-            risks.append({
-                "pest": "mealybugs",
-                "label": "Mealybugs",
-                "telugu": "పిండి పురుగు",
-                "level": "High",
-                "description": "Warmth and humidity favor white cottony mealybug cluster formation."
-            })
-        elif t > 20.0:
-            risks.append({
-                "pest": "mealybugs",
-                "label": "Mealybugs",
-                "telugu": "పిండి పురుగు",
-                "level": "Moderate",
-                "description": "Moderate risk. Prune heavily infested shoots."
-            })
-
-        level_order = {"Critical": 0, "High": 1, "Moderate": 2, "Low": 3}
-        risks.sort(key=lambda r: level_order.get(r["level"], 4))
-        return risks
 
     locations = []
     locations.append({
@@ -777,6 +702,7 @@ def regional_risk():
     return jsonify(locations)
 
 @app.route("/chat", methods=["POST"])
+@limiter.limit("15 per minute")
 def chat():
     try:
         data = request.get_json(silent=True) or {}
@@ -894,8 +820,6 @@ def _execute_guardrail_check(image_bytes: bytes, result: dict) -> dict | None:
     or None to signal that the local cascade must be invoked instead.
     Raises a Flask Response directly for hard 4xx rejections.
     """
-    from flask import jsonify
-
     response_data = None
     if isinstance(result, dict):
         if "error" in result:
@@ -997,7 +921,6 @@ def _compile_groq_payload(
             top["type"]      = kind
 
         label      = top.get("label", "unknown pest")
-        telugu     = top.get("telugu", "")
         confidence = top.get("confidence", 0)
         kind       = top.get("type", "pest")
 
@@ -1009,8 +932,6 @@ def _compile_groq_payload(
             )
 
         translated_label_clean = strip_cross_contamination(translated_label, lang)
-        label_clean            = strip_cross_contamination(label, lang)
-        telugu_clean           = strip_cross_contamination(telugu, lang)
         user_msg_clean         = strip_cross_contamination(user_msg, lang)
 
         target_lang_name = lang_names.get(lang, "English")
@@ -1024,10 +945,40 @@ def _compile_groq_payload(
             f"Mention to the farmer that you are {low_note_hint} and ask one short clarifying question."
         ) if is_low else ""
 
+        # ── Leaf morphology cues (curl direction + leaf-age) ──────────────────
+        morph = top.get("morphology") if isinstance(top, dict) else None
+        morph_note = ""
+        if isinstance(morph, dict) and morph.get("curl_direction") not in (None, "unknown"):
+            curl_dir = morph.get("curl_direction")
+            curl_map = {
+                "upward":   "UPWARD/abaxial cupping (a Leaf Curl Virus signature — vector is whitefly)",
+                "downward": "DOWNWARD inverted-boat curling (a Broad Mite feeding signature)",
+                "flat":     "FLAT — no strong curl signature",
+            }
+            morph_note += (
+                f"\n=== LEAF MORPHOLOGY ANALYSIS (image-based) ===\n"
+                f"Leaf curl: {curl_map.get(curl_dir, curl_dir)} "
+                f"(curl confidence {morph.get('curl_confidence')}%).\n"
+                f"Leaf-age stage: {morph.get('leaf_age')} "
+                f"(confidence {morph.get('age_confidence')}%).\n"
+            )
+            if morph.get("juvenile_mimicry"):
+                morph_note += (
+                    "IMPORTANT: This leaf is structurally mature but shows juvenile size/colour "
+                    "(juvenile mimicry) — a stunting/distortion pattern typical of early viral "
+                    "infection. Weigh Leaf Curl Virus more heavily and explain this cue simply.\n"
+                )
+            morph_note += (
+                "INSTRUCTION: Explicitly reference the curl direction and leaf-age finding in your "
+                "Climate-Pest Correlation Analysis, and let it steer the diagnosis (upward cupping => "
+                "Leaf Curl Virus / whitefly control; downward inverted-boat => Broad Mite control).\n"
+            )
+
         return (
             f"=== CNN DETECTION RESULT ===\n"
             f"Detected: {translated_label_clean}\n"
             f"Type: {kind} | Confidence: {confidence}%\n"
+            f"{morph_note}"
             f"Farmer described: '{user_msg_clean}'\n"
             f"INSTRUCTION: Tell the farmer clearly what this {kind} is in simple words in {target_lang_name} "
             f"(mention the name '{translated_label_clean}' if helpful). "

@@ -1,5 +1,20 @@
   // ── State ──────────────────────────────────────────────────────────────────
   const API_BASE = '';
+
+  // ── Security: escape any dynamic string before it touches innerHTML ─────────
+  // Detection labels and streamed model text are untrusted (the model echoes
+  // the farmer's own message back), so anything interpolated into an HTML
+  // template must be escaped to prevent stored/reflected XSS.
+  function escapeHtml(value) {
+    if (value == null) return '';
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   let conversation  = [];
   let selectedImage = null;
   let isLoading     = false;
@@ -133,6 +148,45 @@ ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interven
     return reply;
   }
 
+  // ── Build leaf curl / leaf-age morphology strip ─────────────────────────────
+  function buildCurlMorphologyHtml(det) {
+    const m = det && det.morphology;
+    if (!m || (m.curl_direction === 'unknown' && m.leaf_age === 'unknown')) return '';
+
+    const curlIcon = { upward: '⬆️', downward: '⬇️', flat: '➖' };
+    const curlText = {
+      upward: 'Upward cupping', downward: 'Downward inverted-boat', flat: 'Flat (no curl)',
+    };
+    const ageIcon = { young: '🌱', adult: '🍃', old: '🍂' };
+
+    const rows = [];
+    if (m.curl_direction && m.curl_direction !== 'unknown') {
+      rows.push(
+        `<div class="morph-row">` +
+          `<span class="morph-key">${curlIcon[m.curl_direction] || '🍃'} Leaf curl</span>` +
+          `<span class="morph-val">${escapeHtml(curlText[m.curl_direction] || m.curl_direction)}` +
+          (m.curl_confidence ? ` (${escapeHtml(m.curl_confidence)}%)` : '') + `</span>` +
+        `</div>` +
+        (m.curl_telugu ? `<div class="morph-telugu">${escapeHtml(m.curl_telugu)}</div>` : '')
+      );
+    }
+    if (m.leaf_age && m.leaf_age !== 'unknown') {
+      rows.push(
+        `<div class="morph-row">` +
+          `<span class="morph-key">${ageIcon[m.leaf_age] || '🍃'} Leaf age</span>` +
+          `<span class="morph-val">${escapeHtml(m.leaf_age)}` +
+          (m.age_confidence ? ` (${escapeHtml(m.age_confidence)}%)` : '') + `</span>` +
+        `</div>`
+      );
+    }
+    if (m.juvenile_mimicry) {
+      rows.push(
+        `<div class="morph-mimicry">⚠️ Mature leaf showing juvenile traits — possible viral stunting</div>`
+      );
+    }
+    return `<div class="morph-strip">${rows.join('')}</div>`;
+  }
+
   // ── Build detection card ───────────────────────────────────────────────────
   function buildDetectionCard(det, isLow) {
     const raw    = det.label || 'Unknown';
@@ -145,22 +199,30 @@ ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interven
     const confNum = typeof conf === 'number' ? conf : (parseInt(conf) || 0);
     const lowCls  = isLow ? ' low' : '';
 
+    // Escape every interpolated value — these come from the model/detector.
+    const engEsc    = escapeHtml(english);
+    const teluguEsc = escapeHtml(telugu);
+    const confEsc   = escapeHtml(conf);
+    const kindEsc   = escapeHtml(kind);
+    const curlHtml  = buildCurlMorphologyHtml(det);
+
     const warnBadge = isLow
       ? `<div class="warning-badge-inline">⚠️ Low Confidence Warning</div>`
       : '';
 
     const teluguHtml = telugu
-      ? `<div class="det-telugu">${telugu}</div>`
+      ? `<div class="det-telugu">${teluguEsc}</div>`
       : '';
 
     return `<div class="detection-card${isLow ? ' low-conf' : ''}">` +
       warnBadge +
-      `<div class="det-pest-name">🔍 ${english}</div>` +
+      `<div class="det-pest-name">🔍 ${engEsc}</div>` +
       teluguHtml +
       `<div class="det-meta">` +
-        `<span class="det-confidence${lowCls}">${conf}%</span>` +
-        `<span class="det-type">${kind}</span>` +
+        `<span class="det-confidence${lowCls}">${confEsc}%</span>` +
+        `<span class="det-type">${kindEsc}</span>` +
       `</div>` +
+      curlHtml +
       `<div class="conf-bar-wrap">` +
         `<div class="conf-bar-label">Detection confidence</div>` +
         `<div class="conf-track">` +
@@ -593,22 +655,26 @@ ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interven
     const sections = parseAdvisorySections(rawText);
 
     if (sections.climate || sections.organic || sections.inorganic) {
+      // Section bodies are raw model output — escape before injecting. The
+      // model is instructed to echo the farmer's message, so this is an
+      // untrusted XSS sink. \n is preserved as <br> for readability.
+      const body = (str) => escapeHtml(str).replace(/\n/g, '<br>');
       textNode.innerHTML = `
         <div class="advisory-stream-container">
           ${sections.climate ? `
           <div class="advisory-card climate-card">
             <div class="card-header">🌦️ Climate-Pest Correlation Analysis</div>
-            <div class="card-body">${sections.climate}</div>
+            <div class="card-body">${body(sections.climate)}</div>
           </div>` : ''}
           ${sections.organic ? `
           <div class="advisory-card organic-card">
             <div class="card-header">🌿 Biological & Organic Interventions</div>
-            <div class="card-body">${sections.organic}</div>
+            <div class="card-body">${body(sections.organic)}</div>
           </div>` : ''}
           ${sections.inorganic ? `
           <div class="advisory-card inorganic-card">
             <div class="card-header">🧪 Targeted Chemical Interventions</div>
-            <div class="card-body">${sections.inorganic}</div>
+            <div class="card-body">${body(sections.inorganic)}</div>
           </div>` : ''}
         </div>
       `;
