@@ -128,6 +128,56 @@
         <img class="preview-img" id="previewImg" src="" alt="">
         <span id="previewName">photo.jpg</span>
         <button class="remove-img" onclick="removeImage()" aria-label="Remove image">✕</button>
+
+        <!-- Quick field questions — improve detection accuracy (optional) -->
+        <div class="field-mcq" id="fieldMcq">
+          <div class="field-mcq-title">Answer a few quick questions for a more accurate diagnosis (optional):</div>
+          <label class="field-q">
+            <span>🌱 How old is the plant?</span>
+            <select id="q_plant_age">
+              <option value="">Select…</option>
+              <option value="seedling">Seedling / nursery (0–4 weeks)</option>
+              <option value="vegetative">Young plant (1–2 months)</option>
+              <option value="flowering">Flowering (2–3 months)</option>
+              <option value="fruiting">Fruiting / harvest (3+ months)</option>
+            </select>
+          </label>
+          <label class="field-q">
+            <span>🔍 What do you mainly see?</span>
+            <select id="q_observed">
+              <option value="">Select…</option>
+              <option value="tiny_insects">Tiny insects on leaves / shoots</option>
+              <option value="holes">Holes in leaves or fruit</option>
+              <option value="white_cottony">White cottony sticky clusters</option>
+              <option value="webbing_dots">Fine webbing / tiny moving dots</option>
+              <option value="curl_yellow">Leaves curling or yellowing</option>
+              <option value="white_powder">Dry white powder on leaves</option>
+              <option value="spots">Dark / brown spots on leaves</option>
+              <option value="not_sure">Not sure</option>
+            </select>
+          </label>
+          <label class="field-q">
+            <span>📍 Which part is mainly affected?</span>
+            <select id="q_affected">
+              <option value="">Select…</option>
+              <option value="new_leaves">New leaves / top shoots</option>
+              <option value="all_leaves">Most leaves</option>
+              <option value="stem">Stem / branches</option>
+              <option value="fruit">Fruit / pods</option>
+              <option value="flowers">Flowers / buds</option>
+            </select>
+          </label>
+          <label class="field-q">
+            <span>🍃 If leaves curl, which way?</span>
+            <select id="q_curl">
+              <option value="">Select…</option>
+              <option value="upward">Curling upward (cup shape)</option>
+              <option value="downward">Curling downward (boat shape)</option>
+              <option value="none">Not curling</option>
+              <option value="not_sure">Not sure</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       <!-- Floating Input Dock -->

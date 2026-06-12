@@ -381,6 +381,9 @@ ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interven
         form.append('message', userText);
         form.append('history', JSON.stringify(conversation));
         form.append('lang', currentLang);
+        // Farmer's MCQ field answers — folded into detection ranking server-side
+        const fieldAnswers = collectFieldAnswers();
+        for (const [k, v] of Object.entries(fieldAnswers)) form.append(k, v);
         if (userLat !== null) {
           form.append('latitude', parseFloat(userLat));
         }
@@ -521,6 +524,30 @@ ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interven
     document.getElementById('fileInput').click();
   }
 
+  // ── Field MCQ answers (sent with the image to refine detection) ─────────────
+  const FIELD_MCQ_IDS = {
+    plant_age:     'q_plant_age',
+    observed:      'q_observed',
+    affected_part: 'q_affected',
+    curl_dir:      'q_curl',
+  };
+
+  function collectFieldAnswers() {
+    const out = {};
+    for (const [key, id] of Object.entries(FIELD_MCQ_IDS)) {
+      const el = document.getElementById(id);
+      if (el && el.value) out[key] = el.value;
+    }
+    return out;
+  }
+
+  function resetFieldAnswers() {
+    for (const id of Object.values(FIELD_MCQ_IDS)) {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    }
+  }
+
   function handleImageUpload(event) {
     const file = event.target.files[0];
     if (!file) return;
@@ -542,6 +569,7 @@ ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interven
     document.getElementById('imagePreview').classList.remove('show');
     document.getElementById('fileInput').value = '';
     document.getElementById('userInput').placeholder = 'Ask about your chilli crop…';
+    resetFieldAnswers();
   }
 
   // ── Language ───────────────────────────────────────────────────────────────

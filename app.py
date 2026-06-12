@@ -174,6 +174,166 @@ def to_core_class(label_or_name):
         return "powdery_mildew"
     return None
 
+# ── Field-context priors (farmer's MCQ answers) ───────────────────────────────
+# Each MCQ answer maps to the core pest/disease classes it makes more (or less)
+# likely. Used to re-rank the vision model's detections. Boost/penalty are
+# bounded so an answer can nudge the ranking but never single-handedly override
+# the image evidence.
+_CTX_BOOST    = 10.0
+_CTX_PENALTY  = 12.0
+_CTX_MAX_UP   = 30.0
+_CTX_MAX_DOWN = 25.0
+
+_OBSERVED_BOOST = {
+    "tiny_insects":  {"aphids", "whitefly_leaf_damage", "invasive_black_thrips", "yellow_thrips"},
+    "holes":         {"fruit_borer", "tobacco_caterpillar"},
+    "white_cottony": {"mealybugs"},
+    "webbing_dots":  {"broad_mites"},
+    "curl_yellow":   {"leaf_curl_virus", "invasive_black_thrips", "yellow_thrips"},
+    "white_powder":  {"powdery_mildew"},
+    "spots":         {"bacterial_leaf_spot", "cercospora_leaf_spot"},
+}
+_PLANT_AGE_BOOST = {
+    "seedling":   {"aphids", "invasive_black_thrips", "yellow_thrips", "leaf_curl_virus"},
+    "vegetative": {"invasive_black_thrips", "yellow_thrips", "aphids", "broad_mites",
+                   "leaf_curl_virus", "whitefly_leaf_damage"},
+    "flowering":  {"invasive_black_thrips", "broad_mites", "mealybugs",
+                   "whitefly_leaf_damage", "fruit_borer"},
+    "fruiting":   {"fruit_borer", "tobacco_caterpillar", "mealybugs",
+                   "bacterial_leaf_spot", "cercospora_leaf_spot", "powdery_mildew"},
+}
+# Pests that physically cannot be the main issue at a given stage (no fruit yet)
+_PLANT_AGE_IMPOSSIBLE = {
+    "seedling":   {"fruit_borer"},
+    "vegetative": {"fruit_borer"},
+}
+_AFFECTED_BOOST = {
+    "new_leaves": {"invasive_black_thrips", "yellow_thrips", "aphids",
+                   "leaf_curl_virus", "broad_mites"},
+    "all_leaves": {"leaf_curl_virus", "broad_mites", "bacterial_leaf_spot",
+                   "cercospora_leaf_spot", "powdery_mildew", "whitefly_leaf_damage"},
+    "stem":       {"mealybugs"},
+    "fruit":      {"fruit_borer", "mealybugs"},
+    "flowers":    {"invasive_black_thrips", "yellow_thrips", "fruit_borer"},
+}
+# Leaf-curl direction ties directly into the morphology feature.
+_CURL_BOOST = {
+    "upward":   {"leaf_curl_virus", "invasive_black_thrips", "yellow_thrips"},
+    "downward": {"broad_mites"},
+}
+_CURL_PENALTY = {
+    "upward":   {"broad_mites"},
+    "downward": {"leaf_curl_virus"},
+}
+
+
+def _sev_label(c):
+    return "High" if c >= 80 else ("Medium" if c >= 50 else "Low (not very sure)")
+
+
+def _apply_field_context(result, ctx):
+    """Re-rank detector output using the farmer's MCQ answers (bounded priors)."""
+    if not isinstance(result, dict) or not ctx or not any(ctx.values()):
+        return result
+    dets = result.get("all_detections")
+    top  = result.get("top_detection")
+    work = dets if isinstance(dets, list) and dets else ([top] if isinstance(top, dict) else [])
+    if not work:
+        return result
+
+    age  = ctx.get("plant_age", "")
+    obs  = ctx.get("observed", "")
+    part = ctx.get("affected_part", "")
+    curl = ctx.get("curl_dir", "")
+
+    for d in work:
+        if not isinstance(d, dict):
+            continue
+        core = to_core_class(d.get("raw_label") or d.get("label"))
+        if not core:
+            continue
+        delta = 0.0
+        if core in _OBSERVED_BOOST.get(obs, ()):        delta += _CTX_BOOST
+        if core in _PLANT_AGE_BOOST.get(age, ()):       delta += _CTX_BOOST
+        if core in _AFFECTED_BOOST.get(part, ()):       delta += _CTX_BOOST
+        if core in _CURL_BOOST.get(curl, ()):           delta += _CTX_BOOST
+        if core in _CURL_PENALTY.get(curl, ()):         delta -= _CTX_PENALTY
+        if core in _PLANT_AGE_IMPOSSIBLE.get(age, ()):  delta -= _CTX_PENALTY + 3.0
+        if delta == 0.0:
+            continue
+        delta = max(-_CTX_MAX_DOWN, min(_CTX_MAX_UP, delta))
+        try:
+            base = float(d.get("confidence", 0))
+        except (TypeError, ValueError):
+            continue
+        newc = max(5.0, min(99.0, base + delta))
+        d["confidence"]    = round(newc, 1)
+        d["severity"]      = _sev_label(newc)
+        d["context_delta"] = round(delta, 1)
+
+    work.sort(key=lambda x: x.get("confidence", 0) if isinstance(x, dict) else 0, reverse=True)
+    result["all_detections"] = work[:3]
+    result["top_detection"]  = work[0]
+    result["context_adjusted"] = True
+    log.info("field_context_applied", extra={"data": {
+        "answers":  {k: v for k, v in ctx.items() if v},
+        "new_top":  work[0].get("raw_label") if isinstance(work[0], dict) else None,
+    }})
+    return result
+
+
+_FIELD_ANSWER_TEXT = {
+    "plant_age": {
+        "seedling":   "Plant age: seedling / nursery (0-4 weeks)",
+        "vegetative": "Plant age: young vegetative (1-2 months)",
+        "flowering":  "Plant age: flowering (2-3 months)",
+        "fruiting":   "Plant age: fruiting / harvest (3+ months)",
+    },
+    "observed": {
+        "tiny_insects":  "Farmer sees: tiny insects on leaves/shoots (sap-sucking pests)",
+        "holes":         "Farmer sees: holes in leaves or fruit (chewing pests)",
+        "white_cottony": "Farmer sees: white cottony sticky clusters (mealybug-like)",
+        "webbing_dots":  "Farmer sees: fine webbing / tiny moving dots (mite-like)",
+        "curl_yellow":   "Farmer sees: leaves curling or yellowing",
+        "white_powder":  "Farmer sees: dry white powder on leaves (mildew-like)",
+        "spots":         "Farmer sees: dark/brown spots on leaves (leaf-spot disease-like)",
+        "not_sure":      "Farmer is not sure what they see",
+    },
+    "affected_part": {
+        "new_leaves": "Mainly affected: new leaves / top shoots",
+        "all_leaves": "Mainly affected: most leaves",
+        "stem":       "Mainly affected: stem / branches",
+        "fruit":      "Mainly affected: fruit / pods",
+        "flowers":    "Mainly affected: flowers / buds",
+    },
+    "curl_dir": {
+        "upward":   "Leaf curl reported: UPWARD cupping (Leaf Curl Virus signature)",
+        "downward": "Leaf curl reported: DOWNWARD inverted-boat (Broad Mite signature)",
+        "none":     "Farmer reports leaves are not curling",
+        "not_sure": "Farmer not sure about leaf curl direction",
+    },
+}
+
+
+def _format_field_answers(ctx):
+    """Render the farmer's MCQ answers into a Groq context block."""
+    if not ctx:
+        return ""
+    lines = []
+    for key in ("plant_age", "observed", "affected_part", "curl_dir"):
+        val = ctx.get(key, "")
+        txt = _FIELD_ANSWER_TEXT.get(key, {}).get(val) if val else None
+        if txt:
+            lines.append("- " + txt)
+    if not lines:
+        return ""
+    return (
+        "\n=== FARMER'S FIELD ANSWERS (factor these into the diagnosis) ===\n"
+        + "\n".join(lines)
+        + "\nUse these answers to refine and explain the diagnosis; if they conflict with "
+          "the image detection, acknowledge it and ask one short clarifying question.\n"
+    )
+
 # ── Pre-compiled script regex map (built once at module load) ─────────────────
 # Eliminates repeated re.compile() calls inside strip_cross_contamination at
 # runtime — the compiled Pattern objects are reused across every request.
@@ -1019,6 +1179,14 @@ def _detect_inner():
     if not user_msg:
         user_msg = "I uploaded a photo of my chilli plant but I am not sure what the problem is."
 
+    # ── Farmer's MCQ field answers (improve detection accuracy) ────────────────
+    field_context = {
+        "plant_age":     request.form.get("plant_age", "").strip().lower(),
+        "observed":      request.form.get("observed", "").strip().lower(),
+        "affected_part": request.form.get("affected_part", "").strip().lower(),
+        "curl_dir":      request.form.get("curl_dir", "").strip().lower(),
+    }
+
     # ── Try HF Space detector first ───────────────────────────────────────────
     image_file = request.files.get("image")
     detection    = None
@@ -1099,6 +1267,9 @@ def _detect_inner():
                 }}, exc_info=True)
                 result = {"error": str(local_exc)}
 
+        # ── Fold the farmer's MCQ answers into detection ranking ──────────────
+        result = _apply_field_context(result, field_context)
+
         top_label = (result.get("top_detection", {}) or {}).get("label") if isinstance(result, dict) else None
         log.info("detector_result", extra={"data": {
             "phase":       result.get("phase") if isinstance(result, dict) else None,
@@ -1124,6 +1295,7 @@ def _detect_inner():
             user_msg=user_msg,
             image_bytes=image_bytes if image_file else None,
         )
+        groq_context += _format_field_answers(field_context)
         if top:
             is_low = result.get("low_confidence", False)
     else:
@@ -1136,6 +1308,7 @@ def _detect_inner():
             f"Ask them 2 specific questions about what they can see, "
             f"then give a diagnosis and 2-3 organic solutions with metrics."
         )
+        groq_context += _format_field_answers(field_context)
 
     # ── Stream Groq response via SSE ──────────────────────────────────────────
     system_content = strip_cross_contamination(SYSTEM_PROMPT, lang)
