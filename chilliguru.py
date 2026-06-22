@@ -6,6 +6,7 @@ Setup:
     python3 chilliguru.py
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -31,6 +32,85 @@ MODEL        = "llama-3.3-70b-versatile"
 MAX_TOKENS   = 1600
 
 client = Groq(api_key=GROQ_API_KEY)
+
+# ── Agronomy knowledge base (mirrors app.py's server-side KB wiring) ──────────
+def _load_kb_json(filename):
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge", filename)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+_CHILLI_KB = _load_kb_json("chilli_kb.json")
+
+# Same core-class -> KB mapping as app.py's _CORE_CLASS_TO_KB; kept duplicated
+# here so this CLI stays a standalone script (no Flask import).
+_CORE_CLASS_TO_KB = {
+    "aphids":                "pests.aphids",
+    "whitefly_leaf_damage":  "pests.whitefly",
+    "fruit_borer":           "pests.fruit_borer",
+    "tobacco_caterpillar":   "pests.tobacco_caterpillar",
+    "yellow_thrips":         "pests.thrips",
+    "broad_mites":           "pests.mites",
+    "invasive_black_thrips": "pests.thrips",
+    "leaf_curl_virus":       "diseases.leaf_curl_virus",
+    "bacterial_leaf_spot":   "diseases.bacterial_leaf_spot",
+    "powdery_mildew":        "diseases.powdery_mildew",
+}
+
+
+def _to_core_class(label_or_name):
+    """Minimal mirror of app.py's to_core_class() for CLI-side KB lookups."""
+    if not label_or_name:
+        return None
+    lbl = str(label_or_name).lower().replace("_", " ")
+    if "black thrips" in lbl or "invasive" in lbl or "thrips" in lbl:
+        return "yellow_thrips" if "yellow" in lbl else "invasive_black_thrips"
+    if "aphid" in lbl:
+        return "aphids"
+    if "white fly" in lbl or "whitefly" in lbl:
+        return "whitefly_leaf_damage"
+    if "fruit borer" in lbl or "helicoverpa" in lbl or "borer" in lbl:
+        return "fruit_borer"
+    if "armyworm" in lbl or "caterpillar" in lbl or "spodoptera" in lbl:
+        return "tobacco_caterpillar"
+    if "mites" in lbl:
+        return "broad_mites"
+    if "leaf curl" in lbl or "curling" in lbl or "mosaic" in lbl or "mozaik" in lbl:
+        return "leaf_curl_virus"
+    if "bacterial" in lbl or "spot" in lbl:
+        return "bacterial_leaf_spot"
+    if "powdery" in lbl or "mildew" in lbl or "leveillula" in lbl:
+        return "powdery_mildew"
+    return None
+
+
+def _format_kb_context(raw_label):
+    """Render the matching chilli_kb.json entry (if any) for the CLI's Groq context."""
+    core_cls = _to_core_class(raw_label)
+    ref = _CORE_CLASS_TO_KB.get(core_cls or "")
+    if not ref:
+        return ""
+    section, _, entry_id = ref.partition(".")
+    entry = _CHILLI_KB.get(section, {}).get(entry_id)
+    if not entry:
+        return ""
+    lines = [
+        "\n=== CURATED AGRONOMY REFERENCE (ground your diagnosis in this) ===",
+        f"Reference name: {entry.get('display_name')}",
+    ]
+    if entry.get("causal_agent"):
+        lines.append(f"Causal agent: {entry['causal_agent']}")
+    if entry.get("key_symptoms"):
+        lines.append(f"Distinguishing symptoms: {entry['key_symptoms']}")
+    mgmt = entry.get("management") or {}
+    if mgmt.get("organic"):
+        lines.append(f"Organic/biological management (reference): {mgmt['organic']}")
+    if mgmt.get("chemical"):
+        lines.append(f"Chemical management (reference — organic-first, last resort): {mgmt['chemical']}")
+    return "\n".join(lines) + "\n"
+
 
 SYSTEM_PROMPT = """
 You are ChilliGuru, a friendly and helpful farming assistant for chilli farmers in
@@ -111,12 +191,14 @@ def call_groq(conversation, user_text, detection_context=None):
 def handle_image(image_path, description):
     print("\n   Checking your plant photo...", end="", flush=True)
     result = detector.detect(image_path)
+    context = detector.format_for_openai(result, description)
     if result.get("success"):
         top = result["top_detection"]
         print(f" Looks like: {top['label']} ({top['confidence']}% sure)")
+        context += _format_kb_context(top.get("raw_label") or top.get("label"))
     else:
         print(f" Couldn't identify — will use your description instead")
-    return detector.format_for_openai(result, description)
+    return context
 
 def banner():
     print()

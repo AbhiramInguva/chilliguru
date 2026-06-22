@@ -30,7 +30,7 @@ def execute_self_calibration():
     with open("pan_india_pests.yaml", "r") as f:
         config = yaml.safe_load(f)
         
-    dataset_path = Path(config.get("path", "dataset"))
+    dataset_path = Path(os.environ.get("DATASET_PATH", config.get("path", "dataset")))
     train_images_dir = dataset_path / "train" / "images"
     train_labels_dir = dataset_path / "train" / "labels"
     valid_images_dir = dataset_path / "valid" / "images"

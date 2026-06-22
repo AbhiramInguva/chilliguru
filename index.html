@@ -725,6 +725,7 @@
 <!-- Leaflet Map -->
 <link  rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
 
@@ -783,15 +784,22 @@
     </div>
 
     <div class="sidebar-section">
-      <h3>Can Detect</h3>
-      <div class="pest-badge"><div class="pest-dot"></div>Fruit Borer (Helicoverpa)</div>
-      <div class="pest-badge"><div class="pest-dot"></div>Chilli Thrips</div>
+      <h3>Active Micro-Pest Classes</h3>
       <div class="pest-badge"><div class="pest-dot"></div>Aphids</div>
-      <div class="pest-badge"><div class="pest-dot"></div>Whitefly</div>
-      <div class="pest-badge"><div class="pest-dot"></div>Spider Mites</div>
-      <div class="pest-badge"><div class="pest-dot"></div>Mealybug</div>
-      <div class="pest-badge"><div class="pest-dot"></div>Armyworm</div>
-      <div class="pest-badge"><div class="pest-dot"></div>Leaf Miner</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Thrips</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Mites</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Whiteflies</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Mealybugs</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Armyworms</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Borer</div>
+    </div>
+
+    <div class="sidebar-section">
+      <h3>Crop Leaf Disease Matrix</h3>
+      <div class="pest-badge"><div class="pest-dot"></div>Chilli Leaf Curl Virus</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Bacterial Leaf Spot</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Cercospora Leaf Spot</div>
+      <div class="pest-badge"><div class="pest-dot"></div>Powdery Mildew</div>
     </div>
 
   </aside>
@@ -834,6 +842,35 @@
               <div class="wc-desc">Home-made &amp; shop remedies</div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- Scientist HITL Validation Panel -->
+      <div id="scientist-validation-panel" style="display: none; padding: 16px; margin: 12px 24px; background: rgba(255, 255, 255, 0.9); border: 1.5px solid var(--border); border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); font-family: 'DM Sans', sans-serif;">
+        <p style="font-weight: 600; font-size: 14px; margin: 0 0 12px 0; color: var(--text);">Is this diagnosis accurate according to field rules?</p>
+        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+          <button id="btn-validate-yes" style="padding: 10px 16px; border: none; border-radius: 8px; background-color: #27ae60; color: white; font-weight: 600; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 6px;" aria-label="Yes, Confirmed">
+            ✅ Yes, Confirmed
+          </button>
+          <button id="btn-validate-no" style="padding: 10px 16px; border: 1.5px solid #c0392b; border-radius: 8px; background-color: transparent; color: #c0392b; font-weight: 600; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 6px;" aria-label="No, Overrule">
+            ❌ No, Overrule
+          </button>
+          
+          <select id="scientist-class-select" style="display: none; padding: 8px 12px; border-radius: 8px; border: 1.5px solid var(--border); background-color: white; font-family: inherit; font-size: 14px; color: var(--text); outline: none; cursor: pointer;">
+            <option value="" disabled selected>Select correct classification...</option>
+            <option value="aphids">Aphids (పేను పురుగు)</option>
+            <option value="whitefly_leaf_damage">Whitefly Leaf Damage (తెల్ల ఈగ ఆకు నష్టం)</option>
+            <option value="fruit_borer">Fruit Borer (పండు తొలిచే పురుగు)</option>
+            <option value="tobacco_caterpillar">Tobacco Caterpillar (గొంగళి పురుగు)</option>
+            <option value="yellow_thrips">Yellow Thrips (తామర పురుగు)</option>
+            <option value="broad_mites">Broad Mites (ఎర్ర సాలె పురుగు)</option>
+            <option value="invasive_black_thrips">Invasive Black Thrips (నల్ల తామర పురుగు)</option>
+            <option value="mealybugs">Mealybugs (పిండి పురుగు)</option>
+            <option value="leaf_curl_virus">Leaf Curl Virus (ఆకు ముడత వైరస్)</option>
+            <option value="bacterial_leaf_spot">Bacterial Leaf Spot (బ్యాక్టీరియల్ ఆకు మచ్చ తెగులు)</option>
+            <option value="cercospora_leaf_spot">Cercospora Leaf Spot (సెర్కోస్పోరా ఆకు మచ్చ తెగులు)</option>
+            <option value="powdery_mildew">Powdery Mildew (బూడిద తెగులు)</option>
+          </select>
         </div>
       </div>
 
@@ -938,7 +975,7 @@
 
 <script>
   // ── State ──────────────────────────────────────────────────────────────────
-  const GROQ_API_KEY = ''; // Replace with your key
+  const API_BASE     = ''; // relative — same Flask origin serves this page
   let conversation   = [];
   let selectedImage  = null;
   let isLoading      = false;
@@ -998,73 +1035,25 @@
     }
   }
 
-  const SYSTEM_PROMPT = `You are ChilliGuru, a friendly and helpful farming assistant for chilli farmers in Andhra Pradesh and Telangana. You talk like a trusted friend who knows a lot about farming — simple, warm, and easy to understand. No complicated words.
+  // NOTE: Chat advice is generated server-side. The system prompt is grounded
+  // in a curated agronomy reference (knowledge/chilli_kb.json) and lives only
+  // in app.py — no prompt, KB content, or API key is exposed client-side.
 
-VARIETIES: Teja, Guntur Sannam, LCA 334, Wonder Hot, Pusa Jwala, Byadgi, and local varieties across Guntur, Khammam, Warangal, Krishna, Prakasam, Kurnool.
-
-SEASONS: Kharif (Jun-Oct) rainy season; Rabi (Nov-Feb) cool season; Zaid (Mar-May) hot season.
-
-PESTS: Thrips, Spider Mites, Aphids, Whiteflies, Fruit Borer, Mealybugs, Leaf Miners, Armyworm, Cutworm, Broad Mite.
-
-DISEASES: Leaf Curl Virus, Powdery Mildew, Anthracnose, Damping Off, Phytophthora, Cercospora Leaf Spot, Bacterial Wilt, Mosaic Virus.
-
-SOLUTION FORMAT — always use this:
-Solution name (Home-made OR Shop):
-How to make/use it: [simple steps]
-How well it works: X out of 10
-Days to see results: X-X days
-Cost: Rs X to Rs X
-How often: every X days for X weeks
-Where to get: [AP/Telangana]
-
-When performing a plant diagnosis, structure your response strictly with these three headers:
-### Climate-Pest Correlation Analysis
-[Provide a brief analysis of the weather/climate factors correlated with this pest/disease pressure]
-
-### Biological & Organic Interventions
-[Provide 2-3 biological or organic solutions using the SOLUTION FORMAT above. You must use explicit sub-class targeting: recommend specific Bacterial vectors (such as Bacillus thuringiensis), Viral vectors (such as NPV blocks), or Fungal pathogens (such as Beauveria bassiana) tailored strictly to the diagnosed pest lifecycle.]
-
-### Targeted Chemical Interventions
-[Provide a brief overview of targeted chemical/inorganic alternatives. Provide chemical details (e.g., active ingredients) but advise biological/organic alternatives first since you are ChilliGuru.]
-
-For every recommended solution/intervention (both biological/organic and chemical), you must explicitly structure the output to include a "Cost-Effectiveness & Speed Evaluation Table" in markdown format. The table must contain these columns:
-- Intervention (name of the solution)
-- Estimated Cost per Acre (in INR ₹)
-- Efficacy Speed (e.g., 'Immediate 24hr knockdown' or '5-day systemic spread')
-- Environmental Residual Protection (residual window, e.g., '7 days' or '14 days')
-
-End with one prevention tip.
-ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interventions). LANGUAGE: reply in the same language the user writes in.`;
-
-  // ── Groq API ───────────────────────────────────────────────────────────────
+  // ── Backend chat call ─────────────────────────────────────────────────────
   async function callGroq(userMessage) {
-    const messages = [
-      { role: 'system', content: SYSTEM_PROMPT },
-      ...conversation,
-      { role: 'user', content: userMessage }
-    ];
-
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    const response = await fetch(`${API_BASE}/chat`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GROQ_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        messages,
-        max_tokens: 1200,
-        temperature: 0.7
-      })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: userMessage, history: conversation, lang: currentLang })
     });
 
     if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err.error?.message || 'API error');
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error || 'API error');
     }
 
     const data  = await response.json();
-    const reply = data.choices[0].message.content;
+    const reply = data.reply;
     conversation.push({ role: 'user', content: userMessage });
     conversation.push({ role: 'assistant', content: reply });
     return reply;
@@ -1179,7 +1168,7 @@ ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interven
       updateStreamingDisplay(textDiv, reply);
     } catch (err) {
       removeTyping();
-      addMessage('bot', `Sorry, something went wrong: ${err.message}\n\nPlease check your Groq API key in the code.`);
+      addMessage('bot', `Sorry, something went wrong: ${err.message}`);
     }
 
     isLoading = false;

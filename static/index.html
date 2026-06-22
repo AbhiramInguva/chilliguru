@@ -11,6 +11,7 @@
 <!-- Leaflet Map CSS & JS -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
 
@@ -68,16 +69,25 @@
     </div>
 
     <div>
-      <div class="section-label">Can Detect</div>
+      <div class="section-label">Active Micro-Pest Classes</div>
       <div class="pest-list">
-        <div class="pest-tag"><div class="pest-dot"></div>Fruit Borer (Helicoverpa)</div>
-        <div class="pest-tag"><div class="pest-dot"></div>Chilli Thrips</div>
         <div class="pest-tag"><div class="pest-dot"></div>Aphids</div>
-        <div class="pest-tag"><div class="pest-dot"></div>Whitefly</div>
-        <div class="pest-tag"><div class="pest-dot"></div>Spider Mites</div>
-        <div class="pest-tag"><div class="pest-dot"></div>Mealybug</div>
-        <div class="pest-tag"><div class="pest-dot"></div>Armyworm</div>
-        <div class="pest-tag"><div class="pest-dot"></div>Leaf Miner</div>
+        <div class="pest-tag"><div class="pest-dot"></div>Thrips</div>
+        <div class="pest-tag"><div class="pest-dot"></div>Mites</div>
+        <div class="pest-tag"><div class="pest-dot"></div>Whiteflies</div>
+        <div class="pest-tag"><div class="pest-dot"></div>Mealybugs</div>
+        <div class="pest-tag"><div class="pest-dot"></div>Armyworms</div>
+        <div class="pest-tag"><div class="pest-dot"></div>Borer</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">Crop Leaf Disease Matrix</div>
+      <div class="pest-list">
+        <div class="pest-tag"><div class="pest-dot"></div>Chilli Leaf Curl Virus</div>
+        <div class="pest-tag"><div class="pest-dot"></div>Bacterial Leaf Spot</div>
+        <div class="pest-tag"><div class="pest-dot"></div>Cercospora Leaf Spot</div>
+        <div class="pest-tag"><div class="pest-dot"></div>Powdery Mildew</div>
       </div>
     </div>
 
@@ -120,6 +130,35 @@
               <div class="wc-desc">Home-made &amp; shop remedies</div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- Scientist HITL Validation Panel -->
+      <div id="scientist-validation-panel" style="display: none; padding: 16px; margin: 12px 24px; background: rgba(255, 255, 255, 0.9); border: 1.5px solid var(--border); border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); font-family: 'DM Sans', sans-serif;">
+        <p style="font-weight: 600; font-size: 14px; margin: 0 0 12px 0; color: var(--text);">Is this diagnosis accurate according to field rules?</p>
+        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+          <button id="btn-validate-yes" style="padding: 10px 16px; border: none; border-radius: 8px; background-color: #27ae60; color: white; font-weight: 600; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 6px;" aria-label="Yes, Confirmed">
+            ✅ Yes, Confirmed
+          </button>
+          <button id="btn-validate-no" style="padding: 10px 16px; border: 1.5px solid #c0392b; border-radius: 8px; background-color: transparent; color: #c0392b; font-weight: 600; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 6px;" aria-label="No, Overrule">
+            ❌ No, Overrule
+          </button>
+          
+          <select id="scientist-class-select" style="display: none; padding: 8px 12px; border-radius: 8px; border: 1.5px solid var(--border); background-color: white; font-family: inherit; font-size: 14px; color: var(--text); outline: none; cursor: pointer;">
+            <option value="" disabled selected>Select correct classification...</option>
+            <option value="aphids">Aphids (పేను పురుగు)</option>
+            <option value="whitefly_leaf_damage">Whitefly Leaf Damage (తెల్ల ఈగ ఆకు నష్టం)</option>
+            <option value="fruit_borer">Fruit Borer (పండు తొలిచే పురుగు)</option>
+            <option value="tobacco_caterpillar">Tobacco Caterpillar (గొంగళి పురుగు)</option>
+            <option value="yellow_thrips">Yellow Thrips (తామర పురుగు)</option>
+            <option value="broad_mites">Broad Mites (ఎర్ర సాలె పురుగు)</option>
+            <option value="invasive_black_thrips">Invasive Black Thrips (నల్ల తామర పురుగు)</option>
+            <option value="mealybugs">Mealybugs (పిండి పురుగు)</option>
+            <option value="leaf_curl_virus">Leaf Curl Virus (ఆకు ముడత వైరస్)</option>
+            <option value="bacterial_leaf_spot">Bacterial Leaf Spot (బ్యాక్టీరియల్ ఆకు మచ్చ తెగులు)</option>
+            <option value="cercospora_leaf_spot">Cercospora Leaf Spot (సెర్కోస్పోరా ఆకు మచ్చ తెగులు)</option>
+            <option value="powdery_mildew">Powdery Mildew (బూడిద తెగులు)</option>
+          </select>
         </div>
       </div>
 

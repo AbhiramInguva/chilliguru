@@ -174,6 +174,119 @@ def to_core_class(label_or_name):
         return "powdery_mildew"
     return None
 
+# ── Agronomy knowledge base (server-side only — never sent raw to the client) ──
+_KB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge")
+
+def _load_kb_json(filename):
+    path = os.path.join(_KB_DIR, filename)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        log.warning("kb_load_failed", extra={"data": {"path": path, "error": str(exc)}})
+        return {}
+
+_CHILLI_KB = _load_kb_json("chilli_kb.json")
+
+# Maps this module's internal core-class ids (the keys used by to_core_class()
+# and REGIONAL_TRANSLATION_MAP above) to a "section.id" entry in chilli_kb.json.
+# This is a different keyspace from knowledge/kb_class_map.json, which maps the
+# 15 *raw vision-model* class names from model_info.json — both ultimately
+# resolve into the same chilli_kb.json. Core classes with no reference entry
+# (mealybugs, cercospora_leaf_spot) are intentionally omitted, not invented.
+_CORE_CLASS_TO_KB = {
+    "aphids":                "pests.aphids",
+    "whitefly_leaf_damage":  "pests.whitefly",
+    "fruit_borer":           "pests.fruit_borer",
+    "tobacco_caterpillar":   "pests.tobacco_caterpillar",
+    "yellow_thrips":         "pests.thrips",
+    "broad_mites":           "pests.mites",
+    "invasive_black_thrips": "pests.thrips",
+    "leaf_curl_virus":       "diseases.leaf_curl_virus",
+    "bacterial_leaf_spot":   "diseases.bacterial_leaf_spot",
+    "powdery_mildew":        "diseases.powdery_mildew",
+}
+
+
+def _get_kb_entry(core_cls):
+    """Resolve a core-class id to its chilli_kb.json entry dict, or None."""
+    ref = _CORE_CLASS_TO_KB.get(core_cls or "")
+    if not ref:
+        return None
+    section, _, entry_id = ref.partition(".")
+    return _CHILLI_KB.get(section, {}).get(entry_id)
+
+
+def _format_kb_context(core_cls):
+    """
+    Render the curated-reference entry for core_cls into a Groq context block.
+    Organic management is surfaced first; any chemical detail is explicitly
+    labelled so the model keeps it confined to "Targeted Chemical
+    Interventions" per the ORGANIC ONLY rule in SYSTEM_PROMPT.
+    """
+    entry = _get_kb_entry(core_cls)
+    if not entry:
+        return ""
+    lines = [
+        "\n=== CURATED AGRONOMY REFERENCE (ground your diagnosis in this) ===",
+        f"Reference name: {entry.get('display_name')}",
+    ]
+    if entry.get("causal_agent"):
+        lines.append(f"Causal agent: {entry['causal_agent']}")
+    if entry.get("key_symptoms"):
+        lines.append(f"Distinguishing symptoms: {entry['key_symptoms']}")
+    mgmt = entry.get("management") or {}
+    if mgmt.get("organic"):
+        lines.append(f"Organic/biological management (reference): {mgmt['organic']}")
+    if mgmt.get("chemical"):
+        lines.append(
+            "Chemical management (reference — use ONLY inside 'Targeted Chemical "
+            f"Interventions', after organic options): {mgmt['chemical']}"
+        )
+    lines.append(
+        "Use this reference to ground the diagnosis and treatment plan; do not "
+        "contradict it, but still phrase things simply for the farmer.\n"
+    )
+    return "\n".join(lines)
+
+
+def _build_deficiency_summary():
+    """
+    Lightweight symptom -> deficiency summary built from chilli_kb.json's
+    deficiencies section, appended to /chat's system prompt. The vision model
+    cannot detect nutrient deficiencies (see chilli_kb.json's top-level note),
+    so this gives the text-only chat path a structured way to distinguish them
+    (e.g. iron vs magnesium vs manganese vs zinc) from a farmer's description —
+    no new ML classifier, just the curated-reference symptoms condensed to one
+    line per deficiency.
+    """
+    deficiencies = _CHILLI_KB.get("deficiencies", {})
+    if not deficiencies:
+        return ""
+    lines = [
+        "\n=== NUTRIENT DEFICIENCY QUICK-REFERENCE (text-only diagnosis aid) ===",
+        "The vision model cannot detect nutrient deficiencies — use these "
+        "symptom patterns to distinguish them when a farmer describes leaf "
+        "colour/curling without a photo, or when a photo is inconclusive:",
+    ]
+    for entry in deficiencies.values():
+        name = entry.get("display_name", "")
+        symptoms = entry.get("key_symptoms", "")
+        first_sentence = symptoms.split(". ")[0].strip().rstrip(".")
+        if name and first_sentence:
+            lines.append(f"- {name}: {first_sentence}.")
+    lines.append(
+        "Ask the farmer whether the discolouration is on the YOUNGEST top leaves "
+        "or the OLDER lower leaves first — this single question separates most of "
+        "the above (iron/zinc/manganese/boron/calcium/copper show on young leaves "
+        "first; nitrogen/magnesium/molybdenum/phosphorous/potassium show on older "
+        "leaves first).\n"
+    )
+    return "\n".join(lines)
+
+_DEFICIENCY_SUMMARY = _build_deficiency_summary()
+
+
 # ── Field-context priors (farmer's MCQ answers) ───────────────────────────────
 # Each MCQ answer maps to the core pest/disease classes it makes more (or less)
 # likely. Used to re-rank the vision model's detections. Boost/penalty are
@@ -882,6 +995,7 @@ def chat():
 
         system_content = strip_cross_contamination(SYSTEM_PROMPT, lang)
         system_content += _LANG_INSTRUCTION_MAP.get(lang, "\nIMPORTANT: You must respond in English.")
+        system_content += _DEFICIENCY_SUMMARY
         system_content = strip_cross_contamination(system_content, lang)
         message_clean  = strip_cross_contamination(message, lang)
 
@@ -1134,11 +1248,15 @@ def _compile_groq_payload(
                 "Leaf Curl Virus / whitefly control; downward inverted-boat => Broad Mite control).\n"
             )
 
+        # ── Curated agronomy reference, when this core class has an entry ─────
+        kb_note = _format_kb_context(core_cls)
+
         return (
             f"=== CNN DETECTION RESULT ===\n"
             f"Detected: {translated_label_clean}\n"
             f"Type: {kind} | Confidence: {confidence}%\n"
             f"{morph_note}"
+            f"{kb_note}"
             f"Farmer described: '{user_msg_clean}'\n"
             f"INSTRUCTION: Tell the farmer clearly what this {kind} is in simple words in {target_lang_name} "
             f"(mention the name '{translated_label_clean}' if helpful). "

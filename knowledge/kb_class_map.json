@@ -1,0 +1,91 @@
+{
+  "_note": "Maps each of the 15 model_info.json vision classes to its knowledge/chilli_kb.json entry (as 'section.id'). 'kb_ref' is null where no matching reference entry exists in knowledge/chilli_reference.txt — these classes get no KB-grounded advice and the chat layer falls back to its general (non-KB) reasoning for them.",
+  "classes": {
+    "Black Thrips": {
+      "kb_ref": "pests.thrips",
+      "match": "approximate",
+      "notes": "Reference 'Thrips' entry (Scirtothrips dorsalis, Caliothrips indicus, Frankliniella sulphurea) covers chilli thrips generally; model class is specifically 'Black Thrips'. Telugu name reused 1:1 from model_info.json."
+    },
+    "Anthracnose": {
+      "kb_ref": "diseases.dieback_fruit_rot",
+      "match": "exact",
+      "notes": "Reference 'Die-back and fruit rot' is caused by Colletotrichum capsici, the standard anthracnose pathogen of chilli."
+    },
+    "Leaf Curl": {
+      "kb_ref": "diseases.leaf_curl_virus",
+      "match": "exact",
+      "notes": "Reference 'Gemini virus' entry describes chilli leaf curl virus."
+    },
+    "Healthy": {
+      "kb_ref": null,
+      "match": "unmapped",
+      "notes": "Not a pest/disease/deficiency — no KB entry expected."
+    },
+    "Leaf Spot": {
+      "kb_ref": "diseases.bacterial_leaf_spot",
+      "match": "approximate",
+      "notes": "Reference document only describes one 'leaf spot' disease entity (Xanthomonas campestris pv. vesicatoria). Model's 'Leaf Spot' class name is generic/unspecified; mapped to Bacterial Leaf Spot for consistency with app.py's to_core_class(), which already routes generic 'spot' labels to bacterial_leaf_spot. FLAGGED for review — could also be a fungal leaf spot not covered by this reference."
+    },
+    "Powdery Mildew": {
+      "kb_ref": "diseases.powdery_mildew",
+      "match": "exact",
+      "notes": null
+    },
+    "Mosaic Virus": {
+      "kb_ref": "diseases.cucumber_mosaic_virus",
+      "match": "approximate",
+      "notes": "Model class is generic 'Mosaic Virus'; reference document's only mosaic-virus entry is Cucumber Mosaic Virus (CMV), the most common cause of mosaic symptoms in chilli per the source. Peanut Bud Necrosis Virus (also in the reference) causes necrotic ring/streak symptoms, not mosaic, so it was not used here."
+    },
+    "Gall Midge": {
+      "kb_ref": "pests.flower_midge",
+      "match": "exact",
+      "notes": "Reference 'Chilli Flower Midge' (Asphondylia capsici) is the same insect as 'Gall Midge'."
+    },
+    "Fruit Borer": {
+      "kb_ref": "pests.fruit_borer",
+      "match": "exact",
+      "notes": "Mapped to the Helicoverpa armigera component of the reference's combined 'Pod Borers' entry."
+    },
+    "Aphids": {
+      "kb_ref": "pests.aphids",
+      "match": "exact",
+      "notes": null
+    },
+    "Mealybug": {
+      "kb_ref": null,
+      "match": "unmapped",
+      "notes": "FLAGGED: knowledge/chilli_reference.txt has no Mealybug entry anywhere (the 'Pests of Economic Importance' list does not include it). No KB-grounded advice is available for this class until the reference is extended."
+    },
+    "Red Mites": {
+      "kb_ref": "pests.mites",
+      "match": "approximate",
+      "notes": "Reference 'Mites' entry covers Polyphagotarsonemus latus, Tarsonemus translucens, and Tetranychus cinnabarinus generally; model class is specifically 'Red Mites' (likely T. cinnabarinus). Telugu name reused 1:1 from model_info.json."
+    },
+    "Beet Armyworm": {
+      "kb_ref": "pests.beet_armyworm",
+      "match": "exact",
+      "notes": "Mapped to the Spodoptera exigua component of the reference's combined 'Pod Borers' entry."
+    },
+    "Tobacco Caterpillar": {
+      "kb_ref": "pests.tobacco_caterpillar",
+      "match": "exact",
+      "notes": "Mapped to the Spodoptera litura component of the reference's combined 'Pod Borers' entry."
+    },
+    "Whitefly": {
+      "kb_ref": "pests.whitefly",
+      "match": "exact",
+      "notes": null
+    }
+  },
+  "unmapped_classes": ["Healthy", "Mealybug"],
+  "kb_entries_with_no_model_class": [
+    "pests.utetheisa_pod_borer",
+    "pests.root_grub",
+    "pests.root_knot_nematode",
+    "diseases.damping_off",
+    "diseases.choanephora_blight",
+    "diseases.wilt",
+    "diseases.peanut_bud_necrosis_virus",
+    "deficiencies.*"
+  ]
+}

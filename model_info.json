@@ -1,4 +1,5 @@
 {
+  "_scope": "Metadata for the PRIMARY remote detector (Hugging Face Space 'inguvaaa/comprehensive', YOLOv8m, 15 classes), uploaded alongside chilli_pest_v2.pt via upload_to_hf.py and read at runtime only by hf_space_app.py on the Space itself. The local Flask app's fallback cascade (detector.py) does NOT read this file — it loads a separate, differently-classed ONNX model family from weights/ (see README.md > Architecture).",
   "model_file": "chilli_pest_v2.pt",
   "architecture": "YOLOv8m",
   "num_classes": 15,

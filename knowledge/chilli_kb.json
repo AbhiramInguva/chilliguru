@@ -1,0 +1,381 @@
+{
+  "_note": "Curated from knowledge/chilli_reference.txt. The 'deficiencies' section is advice-layer only — the 15-class vision model (model_info.json) cannot detect nutrient deficiencies; this content exists so the Groq chat layer can reason about farmer-described symptoms. Where the source reference gave no explicit treatment/dosage for an entry, management.organic and/or management.chemical are left null rather than invented — never fabricate dosages, pathogen names, or symptoms not present in the source.",
+  "deficiencies": {
+    "iron": {
+      "id": "iron",
+      "display_name": "Iron Deficiency",
+      "telugu_name": "",
+      "category": "nutrient_deficiency",
+      "key_symptoms": "Interveinal chlorosis of YOUNG leaves: yellowing starts at the youngest leaves at the top of the plant, turning pale yellow (sometimes nearly white) while the veins stay bright/sharp green. Overall leaf size remains normal; plant height and growth progress normally despite the colour change. Common in alkaline soils (pH more than 7).",
+      "causal_agent": null,
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "manganese": {
+      "id": "manganese",
+      "display_name": "Manganese Deficiency",
+      "telugu_name": "",
+      "category": "nutrient_deficiency",
+      "key_symptoms": "Interveinal chlorosis of YOUNG leaves WITH small, brown necrotic spots/specks appearing on the yellowed areas — leaf edges often remain green. This necrotic speckling is the key feature distinguishing it from iron deficiency. Speckles spread inward; leaves may become distorted; growth and flowering are noticeably slow. Often caused by cold, wet, poorly drained soil, or a nutrient imbalance — excess iron, magnesium, or calcium displacing manganese.",
+      "causal_agent": null,
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "zinc": {
+      "id": "zinc",
+      "display_name": "Zinc Deficiency",
+      "telugu_name": "",
+      "category": "nutrient_deficiency",
+      "key_symptoms": "Interveinal chlorosis of young leaves, typically starting on the lower half of the new and mid-shoot leaves. 'Little Leaf' syndrome — new leaves are significantly smaller, narrower, and distorted (often curling or twisting upward), with bronzing of the leaves. Frequently found in sandy soils, highly weathered soils, or soils with very high phosphorus or pH.",
+      "causal_agent": null,
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "nitrogen": {
+      "id": "nitrogen",
+      "display_name": "Nitrogen Deficiency",
+      "telugu_name": "",
+      "category": "nutrient_deficiency",
+      "key_symptoms": "OLDER leaves turn pale green to yellow FIRST — yellowing is uniform INCLUDING the veins (unlike the interveinal patterns of iron/manganese/zinc). Slow plant growth, thin stems, reduced branching causing short spindly plants, distorted leaves, yellowish-white leaf colour under extreme deficiency, stunted growth, fruits small and chlorotic, reduced flowering and fruit size. (Excess nitrogen is a separate condition, not covered with dosage detail in the source.)",
+      "causal_agent": null,
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "molybdenum": {
+      "id": "molybdenum",
+      "display_name": "Molybdenum Deficiency",
+      "telugu_name": "",
+      "category": "nutrient_deficiency",
+      "key_symptoms": "Distorted leaves with reduced leaf area; interveinal chlorosis with dark green main veins; 'Whiptail' formation; chlorotic leaf margins; in severe cases the whole leaf turns yellowish. Appears in OLDER and middle-aged leaves first, then in younger leaves — chlorosis resembles nitrogen deficiency, along with scorching and strapping of leaf margins.",
+      "causal_agent": null,
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "magnesium": {
+      "id": "magnesium",
+      "display_name": "Magnesium Deficiency",
+      "telugu_name": "",
+      "category": "nutrient_deficiency",
+      "key_symptoms": "Interveinal chlorosis of OLDER leaves — veins remain dark green while the tissue between them yellows. Contrast with iron/manganese/zinc deficiencies, which primarily affect young leaves.",
+      "causal_agent": null,
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "boron": {
+      "id": "boron",
+      "display_name": "Boron Deficiency",
+      "telugu_name": "",
+      "category": "nutrient_deficiency",
+      "key_symptoms": "Deficiency is seen mainly in YOUNGER leaves: curling of leaves, irregular leaf formation, flower and fruit dropping with irregular fruit formation, light general chlorosis of leaves, malformed newly emerging leaves, necrosis of meristematic tissues leading to loss of apical dominance, leaves become distorted and brittle, stunted growth, young leaves become smaller, reduction in weight and size of the fruit, cracking of fruits and fruit fall.",
+      "causal_agent": null,
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "calcium": {
+      "id": "calcium",
+      "display_name": "Calcium Deficiency (Blossom End Rot Disorder)",
+      "telugu_name": "",
+      "category": "nutrient_deficiency",
+      "key_symptoms": "Symptoms first noticed in YOUNGER leaves: browning and necrosis of the growing tips of roots and leaves, blossom end rot of the fruit, upward curling of leaves, necrosis around the base of the leaves, small and deformed leaves, marginal leaf chlorosis followed by necrosis, flower buds fail to develop. Also known as blossom end rot disorder; deficiency symptoms are seen on the growing tips as necrotic spots — one of the major problems faced by chilli growers.",
+      "causal_agent": null,
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "phosphorous": {
+      "id": "phosphorous",
+      "display_name": "Phosphorous Deficiency",
+      "telugu_name": "",
+      "category": "nutrient_deficiency",
+      "key_symptoms": "Older, lower leaves develop irregular spots of brown to dark brown dead tissue. Reddish to purple pigmentation may appear on the under or upper surface of leaf margins, lower leaves, and stems. Eventually, leaf death of older leaves may occur. Lack of phosphorus delays flowering in plants. Slow root development, plants remain small, leaves may appear dark green or purplish (especially older leaves).",
+      "causal_agent": null,
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "potassium": {
+      "id": "potassium",
+      "display_name": "Potassium Deficiency",
+      "telugu_name": "",
+      "category": "nutrient_deficiency",
+      "key_symptoms": "Yellowing starts at leaf margins and spreads inward; older leaves are affected first.",
+      "causal_agent": null,
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "copper": {
+      "id": "copper",
+      "display_name": "Copper Deficiency",
+      "telugu_name": "",
+      "category": "nutrient_deficiency",
+      "key_symptoms": "Leaf cupping and curling: young leaves on the top half of the plant show unusual inward curling, often forming a cup-like shape. Chlorosis: yellowing or bleaching begins at the leaf tips and margins, slowly spreading inward between the veins, with distinct bleached margins at active growing points. Stunted and distorted growth — plant growth slows significantly, stems may lose strength, new shoots might die back entirely. Flower and fruit drop — poor or irregular fruit setting, fruits that do develop often appear small and distorted.",
+      "causal_agent": null,
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    }
+  },
+  "pests": {
+    "thrips": {
+      "id": "thrips",
+      "display_name": "Chilli Thrips",
+      "telugu_name": "నల్ల తామర పురుగులు",
+      "category": "insect",
+      "key_symptoms": "Both nymphs and adults lacerate leaf tissues and suck the oozing sap, sometimes attacking buds and flowers too. Generally attack tender leaves and growing shoots; rarely the older leaves. Damage results in curling of leaves UPWARD, crumbling and shedding of infested buds which turn brittle with the petiole becoming brown and dropping down. Affected fruits show light brown scars. Infestation is severe in dry weather; damage ranges 30-50%.",
+      "causal_agent": "Scirtothrips dorsalis, Caliothrips indicus, Frankliniella sulphurea",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "mites": {
+      "id": "mites",
+      "display_name": "Chilli Mites",
+      "telugu_name": "ఎర్ర నల్లులు",
+      "category": "mite",
+      "key_symptoms": "Both nymphs and adults suck sap and devitalize the plant. Infestation results in DOWNWARD curling of leaves; affected leaves become inverted boat-shaped. Leaves roll down along the margin with elongation of petioles. Affected leaves turn dark green in certain cases. Younger leaves at the tip of the branch cluster together. Causes fruit infestation as well.",
+      "causal_agent": "Polyphagotarsonemus latus, Tarsonemus translucens, Tetranychus cinnabarinus",
+      "management": {
+        "organic": null,
+        "chemical": "Synthetic pyrethroids not to be used. Do not use Acephate or carbaryl. Spraying with spiromesifen 1ml/l or fenpropathrin 0.32ml/l or ethion 3ml/l or propargite 3ml/l or chlorfenapyr 2ml/l or fenazaquin 2ml/l or diafenthiuron 1.2g/l or emamectin benzoate 0.4g/litre of water."
+      }
+    },
+    "aphids": {
+      "id": "aphids",
+      "display_name": "Chilli Aphids",
+      "telugu_name": "పేనుబంక",
+      "category": "insect",
+      "key_symptoms": "Adults found in large numbers on the undersurface of leaves and growing shoots of plants. Both nymphs and adults suck sap and excrete honeydew on which black sooty mould develops, affecting photosynthetic activity. Causes retardation in growth and fruiting capacity of the plant; sooty mould formation.",
+      "causal_agent": "Aphis gossypii, Myzus persicae",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "whitefly": {
+      "id": "whitefly",
+      "display_name": "Chilli Whitefly",
+      "telugu_name": "తెల్ల దోమ",
+      "category": "insect",
+      "key_symptoms": "Both nymphs and adults suck sap from the lower side of leaves, resulting in chlorotic spots which later coalesce, forming irregular yellowing of leaves extending from veins to outer edges. Sooty mould develops from honeydew excretion on infested parts. It is the vector of leaf curl Gemini virus.",
+      "causal_agent": "Bemisia tabaci",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "flower_midge": {
+      "id": "flower_midge",
+      "display_name": "Chilli Flower Midge (Gall Midge)",
+      "telugu_name": "గాల్ మిడ్జ్",
+      "category": "insect",
+      "key_symptoms": "The fly is a dark reddish-brown, mosquito-like midge that lays eggs in flower buds. The maggot is tiny, pale orange coloured, and feeds on the floral parts, leading to poor development of fruits. The ovary is distorted into a gall-like structure of varied shape.",
+      "causal_agent": "Asphondylia capsici",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "fruit_borer": {
+      "id": "fruit_borer",
+      "display_name": "Chilli Fruit Borer",
+      "telugu_name": "కాయ తొలుచు పురుగు",
+      "category": "insect",
+      "key_symptoms": "Attack of Helicoverpa armigera leads to a ROUND hole on fruits. Part of the broader chilli pod-borer complex (see also Beet Armyworm and Tobacco Caterpillar entries) which together cause irregular holes in leaves and fruits, whitish/dried-up pods, and eaten seeds.",
+      "causal_agent": "Helicoverpa armigera",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "beet_armyworm": {
+      "id": "beet_armyworm",
+      "display_name": "Beet Armyworm",
+      "telugu_name": "పొగాకు లద్దె పురుగు",
+      "category": "insect",
+      "key_symptoms": "Feeding by S. exigua (together with S. litura) leads to irregular holes on the leaves and fruits. Affected pods turn whitish and dry up; in fruits, seeds are also eaten.",
+      "causal_agent": "Spodoptera exigua",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "tobacco_caterpillar": {
+      "id": "tobacco_caterpillar",
+      "display_name": "Tobacco Caterpillar",
+      "telugu_name": "పొగాకు పురుగు",
+      "category": "insect",
+      "key_symptoms": "Feeding by S. litura (together with S. exigua) leads to irregular holes on the leaves and fruits. Affected pods turn whitish and dry up; in fruits, seeds are also eaten.",
+      "causal_agent": "Spodoptera litura",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "utetheisa_pod_borer": {
+      "id": "utetheisa_pod_borer",
+      "display_name": "Utetheisa Pod Borer",
+      "telugu_name": "",
+      "category": "insect",
+      "key_symptoms": "Feeds on the pericarp of the chilli pod leaving the seed intact. Ladder-like marks are seen on the chilli pod due to this pest.",
+      "causal_agent": "Utetheisa pulchella",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "root_grub": {
+      "id": "root_grub",
+      "display_name": "Root Grub",
+      "telugu_name": "",
+      "category": "insect",
+      "key_symptoms": "Adults are reddish-brown beetles that come out of the soil, feed on host plants, mate, then return to the soil. Grubs are white with a brown head. First-instar larvae feed on organic matter; second-instar larvae are voracious feeders; third and later instar larvae are sluggish and feed little.",
+      "causal_agent": "Holotrichia serrata",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "root_knot_nematode": {
+      "id": "root_knot_nematode",
+      "display_name": "Root Knot Nematode",
+      "telugu_name": "",
+      "category": "nematode",
+      "key_symptoms": "Sedentary root/tuber endoparasites. Infested root parts are swollen and galls are formed. Growth of the plant is retarded; leaves turn pale green to yellow; fruit development is retarded. Infested root parts change from light brown to dark brown in colour. Nematodes obstruct the flow of nutrients to the plant and predispose the root system to other microorganism infections.",
+      "causal_agent": "Meloidogyne arenaria, M. javanica, M. incognita",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    }
+  },
+  "diseases": {
+    "damping_off": {
+      "id": "damping_off",
+      "display_name": "Damping Off",
+      "telugu_name": "",
+      "category": "oomycete",
+      "key_symptoms": "Pre-emergence damping off: seedlings disintegrate before they come out of the soil surface, leading to poor seed germination. Post-emergence damping off: disease develops after seedlings have emerged but before the stems are lignified. Water-soaked lesion formation at the collar region; infected areas turn brown and rot; plants shrivel and collapse as a result of softening of tissues.",
+      "causal_agent": "Pythium aphanidermatum",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "bacterial_leaf_spot": {
+      "id": "bacterial_leaf_spot",
+      "display_name": "Bacterial Leaf Spot",
+      "telugu_name": "",
+      "category": "bacterial",
+      "key_symptoms": "Leaves, fruits, and stems are affected. Lesions on leaves begin as circular, water-soaked spots. Severely spotted leaves turn yellow and drop. Raised brown lesions appear on fruits. Narrow, elongated lesions or streaks may develop on stems.",
+      "causal_agent": "Xanthomonas campestris pv. vesicatoria",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "choanephora_blight": {
+      "id": "choanephora_blight",
+      "display_name": "Choanephora Blight / Wet Rot (Twig Blight)",
+      "telugu_name": "",
+      "category": "fungal",
+      "key_symptoms": "Plants from seedling to early-flowering stage are susceptible. The pathogen attacks flowers through the senescing petals and overgrows on flowers, resulting in a brown or black mass of rotten tissue. On infected tissue, a stiff, silvery mass of whisker-like/hairy fungal strands develops, on which a black mass of spores is produced — the chief diagnostic feature. Infected young fruits may abort. Individual branches may be attacked, showing dieback. Stems of infected plants appear wet and green, and the bark peels off in shreds.",
+      "causal_agent": "Choanephora cucurbitarum",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "dieback_fruit_rot": {
+      "id": "dieback_fruit_rot",
+      "display_name": "Die-back and Fruit Rot (Anthracnose)",
+      "telugu_name": "కాయ కుళ్ళు",
+      "category": "fungal",
+      "key_symptoms": "Dieback symptoms: small, circular to irregular, brownish-black scattered spots appear on leaves; severely infected leaves defoliate; infection of growing tips leads to necrosis of branches from the tip backwards; shedding of flowers due to infection at the pedicel and tips of branches. Fruit rot symptoms: small, circular, yellowish to pinkish sunken spots appear on fruits; severe infection results in shrivelling and drying of fruits; minute, black, dot-like fruiting bodies called 'acervuli' develop in concentric rings on the lesion surface and fruits appear straw-coloured; affected fruits may fall off; seeds in severely infected fruits are discoloured and covered with mycelial mat.",
+      "causal_agent": "Colletotrichum capsici",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "powdery_mildew": {
+      "id": "powdery_mildew",
+      "display_name": "Powdery Mildew",
+      "telugu_name": "బూడిద తెగులు",
+      "category": "fungal",
+      "key_symptoms": "White powdery coating appears mostly on the lower leaf surface and occasionally on the upper surface, with corresponding yellow patches visible on the upper surface. Severe infection results in drying and shedding of affected leaves. Powdery growth can also be seen on branches and young fruits. Diseased fruits do not grow further and may drop prematurely.",
+      "causal_agent": "Leveillula taurica",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "wilt": {
+      "id": "wilt",
+      "display_name": "Wilt",
+      "telugu_name": "",
+      "category": "fungal",
+      "key_symptoms": "Initial slight yellowing of the foliage and wilting of the upper leaves that progresses in a few days into a permanent wilt with the leaves still attached. Generally appears in localised areas of the field where a high percentage of plants wilt and die, although scattered wilted plants may also occur. The vascular system of the plant is discoloured, particularly in the lower stem and roots.",
+      "causal_agent": "Fusarium oxysporum f.sp. capsici",
+      "management": {
+        "organic": "Application of Trichoderma viride 2kg, farm yard manure (FYM) 90kg, and neem cake 10kg, applied between the plant rows.",
+        "chemical": "Drenching with COC (copper oxychloride) 3g/l at the base of the plant."
+      }
+    },
+    "leaf_curl_virus": {
+      "id": "leaf_curl_virus",
+      "display_name": "Leaf Curl Virus (Gemini Virus)",
+      "telugu_name": "ఆకు ముడత",
+      "category": "viral",
+      "key_symptoms": "Leaves curl towards the midrib and become deformed. Stunted plant growth due to shortened internodes and leaves greatly reduced in size. Leaves appear curled, showing small inflammations like blisters on the leaf surface. Transmitted by whiteflies.",
+      "causal_agent": "Gemini virus",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "cucumber_mosaic_virus": {
+      "id": "cucumber_mosaic_virus",
+      "display_name": "Cucumber Mosaic Virus",
+      "telugu_name": "మొజాయిక్ వైరస్",
+      "category": "viral",
+      "key_symptoms": "Reduction in leaf size and narrowing of the lamina. Chlorosis leading to mosaic symptoms. Downward curling along the midrib. Fruit may be small and distorted. Transmitted by aphids.",
+      "causal_agent": "Cucumber mosaic virus (CMV)",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    },
+    "peanut_bud_necrosis_virus": {
+      "id": "peanut_bud_necrosis_virus",
+      "display_name": "Peanut Bud Necrosis Virus",
+      "telugu_name": "",
+      "category": "viral",
+      "key_symptoms": "Mild chlorotic mottle or specks on young, quadrifoliate leaves, which develop into chlorotic and necrotic rings and streaks. Necrosis extends from the leaf to the petiole and terminal bud, resulting in necrosis of the terminal bud. Secondary symptoms include stunting, auxiliary shoot proliferation, and malformation of leaflets. Transmitted by thrips.",
+      "causal_agent": "Peanut bud necrosis virus (PBNV)",
+      "management": {
+        "organic": null,
+        "chemical": null
+      }
+    }
+  }
+}

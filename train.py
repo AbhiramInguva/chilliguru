@@ -17,7 +17,7 @@ IMG_SIZE    = 640
 BATCH_SIZE  = 16
 MODEL_BASE  = "yolov8n.pt"
 OUTPUT      = "chilli_pest_model.pt"
-DATASET_DIR = Path("dataset")
+DATASET_DIR = Path(os.environ.get("DATASET_PATH", "dataset"))
 
 CHILLI_PESTS = {
     # Mappings to "aphids"
@@ -197,7 +197,7 @@ def filter_classes():
 
     filtered_yaml = Path("pan_india_pests.yaml").absolute()
     yaml.dump({
-        "path":  str(DATASET_DIR.absolute()),
+        "path":  f"./{DATASET_DIR}",
         "train": str(train_imgs[0].relative_to(DATASET_DIR.absolute())) if train_imgs else "train/images",
         "val":   str(valid_imgs[0].relative_to(DATASET_DIR.absolute())) if valid_imgs else "valid/images",
         "nc":    len(NEW_CLASSES),

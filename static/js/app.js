@@ -20,6 +20,18 @@
   let isLoading     = false;
   let userLat       = null;
   let userLng       = null;
+  let lastImageFile = null;
+  let lastResponseTextNode = null;
+
+  function isNonChilliResponse(status, errorText, label) {
+    const txt = (errorText || '').toLowerCase() + ' ' + (label || '').toLowerCase();
+    return status === 422 || 
+           txt.includes('chilli plant') || 
+           txt.includes('chili plant') || 
+           txt.includes('cannot identify crop') || 
+           txt.includes('non_chilli') ||
+           label === 'non_chilli';
+  }
 
   function detectUserLanguage() {
     const userLang = navigator.language || navigator.userLanguage || '';
@@ -74,43 +86,9 @@
     }
   }
 
-  const SYSTEM_PROMPT = `You are ChilliGuru, a friendly and helpful farming assistant for chilli farmers in Andhra Pradesh and Telangana. You talk like a trusted friend who knows a lot about farming — simple, warm, and easy to understand. No complicated words.
-
-VARIETIES: Teja, Guntur Sannam, LCA 334, Wonder Hot, Pusa Jwala, Byadgi, and local varieties across Guntur, Khammam, Warangal, Krishna, Prakasam, Kurnool.
-
-SEASONS: Kharif (Jun-Oct) rainy season; Rabi (Nov-Feb) cool season; Zaid (Mar-May) hot season.
-
-PESTS: Thrips, Spider Mites, Aphids, Whiteflies, Fruit Borer, Mealybugs, Leaf Miners, Armyworm, Cutworm, Broad Mite.
-
-DISEASES: Leaf Curl Virus, Powdery Mildew, Anthracnose, Damping Off, Phytophthora, Cercospora Leaf Spot, Bacterial Wilt, Mosaic Virus.
-
-SOLUTION FORMAT — always use this:
-Solution name (Home-made OR Shop):
-How to make/use it: [simple steps]
-How well it works: X out of 10
-Days to see results: X-X days
-Cost: Rs X to Rs X
-How often: every X days for X weeks
-Where to get: [AP/Telangana]
-
-When performing a plant diagnosis, structure your response strictly with these three headers:
-### Climate-Pest Correlation Analysis
-[Provide a brief analysis of the weather/climate factors correlated with this pest/disease pressure]
-
-### Biological & Organic Interventions
-[Provide 2-3 biological or organic solutions using the SOLUTION FORMAT above. You must use explicit sub-class targeting: recommend specific Bacterial vectors (such as Bacillus thuringiensis), Viral vectors (such as NPV blocks), or Fungal pathogens (such as Beauveria bassiana) tailored strictly to the diagnosed pest lifecycle.]
-
-### Targeted Chemical Interventions
-[Provide a brief overview of targeted chemical/inorganic alternatives. Provide chemical details (e.g., active ingredients) but advise biological/organic alternatives first since you are ChilliGuru.]
-
-For every recommended solution/intervention (both biological/organic and chemical), you must explicitly structure the output to include a "Cost-Effectiveness & Speed Evaluation Table" in markdown format. The table must contain these columns:
-- Intervention (name of the solution)
-- Estimated Cost per Acre (in INR ₹)
-- Efficacy Speed (e.g., 'Immediate 24hr knockdown' or '5-day systemic spread')
-- Environmental Residual Protection (residual window, e.g., '7 days' or '14 days')
-
-End with one prevention tip.
-ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interventions). LANGUAGE: reply in the same language the user writes in.`;
+  // NOTE: Chat advice is generated server-side (app.py SYSTEM_PROMPT), grounded
+  // in a curated agronomy reference (knowledge/chilli_kb.json). No prompt or
+  // KB content is embedded client-side.
 
   // ── Health check ───────────────────────────────────────────────────────────
   async function checkHealth() {
@@ -272,8 +250,13 @@ ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interven
     }
 
     const txt = document.createElement('div');
-    txt.style.whiteSpace = 'pre-wrap';
-    txt.textContent = content;
+    if (role === 'bot') {
+      txt.innerHTML = content.startsWith('<div class="alert-card-warning"') ? content : marked.parse(content);
+      lastResponseTextNode = txt;
+    } else {
+      txt.style.whiteSpace = 'pre-wrap';
+      txt.textContent = content;
+    }
     bubble.appendChild(txt);
 
     wrap.appendChild(av);
@@ -396,7 +379,23 @@ ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interven
         // Non-2xx responses are always small JSON (validation / rate-limit errors)
         if (!res.ok) {
           let errMsg = 'Detection error';
-          try { errMsg = (await res.json()).error || errMsg; } catch {}
+          let checkNonChilli = false;
+          try {
+            const errData = await res.json();
+            errMsg = errData.error || errMsg;
+            if (res.status === 422 || isNonChilliResponse(res.status, errMsg, errData.label)) {
+              checkNonChilli = true;
+            }
+          } catch {}
+          
+          if (checkNonChilli) {
+            removeTyping();
+            addMessage('bot', '<div class="alert-card-warning" style="background:#fef2f2; border:1px solid #f87171; color:#991b1b; padding:16px; border-radius:12px; font-weight:500; margin:8px 0; font-family:\'DM Sans\',sans-serif; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">⚠️ Clear Capture Required: Please upload a close-up photo of a chilli leaf or fruit for analysis.</div>');
+            isLoading = false;
+            document.getElementById('sendBtn').disabled = false;
+            selectedImage = null;
+            return;
+          }
           throw new Error(errMsg);
         }
 
@@ -478,6 +477,13 @@ ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interven
           let detectionCard = null;
 
           if (data.success === false) {
+            if (isNonChilliResponse(200, data.error, data.label || (data.top_detection || {}).label)) {
+              addMessage('bot', '<div class="alert-card-warning" style="background:#fef2f2; border:1px solid #f87171; color:#991b1b; padding:16px; border-radius:12px; font-weight:500; margin:8px 0; font-family:\'DM Sans\',sans-serif; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">⚠️ Clear Capture Required: Please upload a close-up photo of a chilli leaf or fruit for analysis.</div>');
+              isLoading = false;
+              document.getElementById('sendBtn').disabled = false;
+              selectedImage = null;
+              return;
+            }
             reply = data.error || 'Unable to process this image. Please try again.';
             if (data.phase === 3) {
               detectionCard = `<div class="warning-badge-inline">⚠️ Low Confidence Warning</div>`;
@@ -685,29 +691,28 @@ ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interven
     if (sections.climate || sections.organic || sections.inorganic) {
       // Section bodies are raw model output — escape before injecting. The
       // model is instructed to echo the farmer's message, so this is an
-      // untrusted XSS sink. \n is preserved as <br> for readability.
-      const body = (str) => escapeHtml(str).replace(/\n/g, '<br>');
+      // untrusted XSS sink.
       textNode.innerHTML = `
         <div class="advisory-stream-container">
           ${sections.climate ? `
           <div class="advisory-card climate-card">
             <div class="card-header">🌦️ Climate-Pest Correlation Analysis</div>
-            <div class="card-body">${body(sections.climate)}</div>
+            <div class="card-body">${marked.parse(escapeHtml(sections.climate))}</div>
           </div>` : ''}
           ${sections.organic ? `
           <div class="advisory-card organic-card">
             <div class="card-header">🌿 Biological & Organic Interventions</div>
-            <div class="card-body">${body(sections.organic)}</div>
+            <div class="card-body">${marked.parse(escapeHtml(sections.organic))}</div>
           </div>` : ''}
           ${sections.inorganic ? `
           <div class="advisory-card inorganic-card">
             <div class="card-header">🧪 Targeted Chemical Interventions</div>
-            <div class="card-body">${body(sections.inorganic)}</div>
+            <div class="card-body">${marked.parse(escapeHtml(sections.inorganic))}</div>
           </div>` : ''}
         </div>
       `;
     } else {
-      textNode.textContent = rawText;
+      textNode.innerHTML = marked.parse(escapeHtml(rawText));
     }
   }
 
