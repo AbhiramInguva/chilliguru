@@ -7,10 +7,11 @@ on:
   workflow_dispatch:
 
 jobs:
-  self-heal:
+  # Retrains and runs the held-out validation gate. Never pushes/deploys by
+  # itself -- promotion only happens in the second job, and only if this one
+  # succeeds (i.e. the gate approved the candidate).
+  train-and-validate:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
@@ -43,11 +44,60 @@ jobs:
         run: |
           python3 tests/test_field_scenarios.py
 
-      - name: Commit and Push Updated Weights
+      # Promotion gate: refuses (non-zero exit) if the held-out validation
+      # set isn't populated, no baseline exists yet, or the candidate scores
+      # below the current production model's metric minus tolerance. A
+      # failure here fails this job, which means promote-and-deploy below
+      # (which `needs: train-and-validate`) never runs -- that IS the
+      # "promotion blocked" signal, no separate kill-switch needed.
+      - name: Run Held-Out Validation Gate
+        id: gate
+        run: |
+          python3 scripts/eval/run_validation_gate.py
+
+      - name: Promotion blocked notice
+        if: failure()
+        run: |
+          echo "::error::Promotion BLOCKED — the retrained model did not pass the held-out validation gate (see the 'Run Held-Out Validation Gate' step above for why — likely an empty/missing validation set, no seeded baseline, or a metric regression). Existing production weights are kept; promote-and-deploy will be skipped." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload gate-approved candidate
         if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: promoted-model
+          path: |
+            chilli_pest_model.pt
+            weights/chilli_pest_model.onnx
+            models/registry.json
+            models/versions/**
+          if-no-files-found: error
+
+  # Only runs if train-and-validate succeeded (gate approved). The
+  # `environment:` below additionally supports a human manual-approval step:
+  # in the GitHub repo Settings -> Environments, create an environment named
+  # "production-deploy" and add required reviewers -- this job will then
+  # pause and wait for a human to click Approve before committing/pushing,
+  # on top of the automated gate already having passed. This is a one-time,
+  # human-only GitHub UI step; it cannot be configured from this workflow file.
+  promote-and-deploy:
+    needs: train-and-validate
+    runs-on: ubuntu-latest
+    environment: production-deploy
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Download gate-approved candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: promoted-model
+
+      - name: Commit and Push Promoted Weights
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add chilli_pest_model.pt weights/chilli_pest_model.onnx
-          git commit -m "Auto-calibrate and update model weights [skip ci]" || echo "No changes to commit"
+          git add chilli_pest_model.pt weights/chilli_pest_model.onnx models/registry.json models/versions
+          git commit -m "Auto-calibrate and promote model weights (gate-passed) [skip ci]" || echo "No changes to commit"
           git push origin main

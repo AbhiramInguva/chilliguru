@@ -45,3 +45,21 @@ Thumbs.db
 # Shadow dataset — farmer images captured for active learning (runtime data, not committed)
 static/uploads/shadow_dataset/*
 !static/uploads/shadow_dataset/.gitkeep
+
+# Telemetry logs — curated farmer images self_heal.py retrains on (runtime
+# data, not committed; see PRIVACY.md). NOTE: a few pre-existing test fixture
+# files (telemetry_placeholder.jpg, cloud_integration_test*) were already
+# committed before this rule was added and remain tracked — they are test
+# fixtures, not real farmer photos.
+static/uploads/telemetry_logs/*
+!static/uploads/telemetry_logs/.gitkeep
+!static/uploads/telemetry_logs/telemetry_placeholder.jpg
+!static/uploads/telemetry_logs/cloud_integration_test.json
+!static/uploads/telemetry_logs/cloud_integration_test_raw.jpg
+
+# Self-heal model registry backups — small ONNX copies, same pattern as weights/*.onnx above
+!models/versions/**/*.onnx
+
+# Diagnostics outputs and samples
+scripts/diagnostics/out/
+scripts/diagnostics/samples/

@@ -52,9 +52,9 @@
       "notes": null
     },
     "Mealybug": {
-      "kb_ref": null,
-      "match": "unmapped",
-      "notes": "FLAGGED: knowledge/chilli_reference.txt has no Mealybug entry anywhere (the 'Pests of Economic Importance' list does not include it). No KB-grounded advice is available for this class until the reference is extended."
+      "kb_ref": "pests.mealybugs",
+      "match": "approximate",
+      "notes": "knowledge/chilli_reference.txt has no Mealybug entry (the 'Pests of Economic Importance' list doesn't include it), so this entry was added separately using only well-established, generic mealybug facts (cottony masses, honeydew/sooty mould, sap-sucking) rather than the curated reference. No chemical dosage is given (management.chemical is null) since none is sourced from the reference. Telugu name reused 1:1 from model_info.json."
     },
     "Red Mites": {
       "kb_ref": "pests.mites",
@@ -77,7 +77,7 @@
       "notes": null
     }
   },
-  "unmapped_classes": ["Healthy", "Mealybug"],
+  "unmapped_classes": ["Healthy"],
   "kb_entries_with_no_model_class": [
     "pests.utetheisa_pod_borer",
     "pests.root_grub",

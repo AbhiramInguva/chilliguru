@@ -96,7 +96,8 @@ before being shown to the farmer or matched against the knowledge base.
 | Route | Method | Purpose |
 |---|---|---|
 | `/` | GET | Serves `static/index.html` |
-| `/health` | GET | `{status, hf_connected, groq_ready}` — liveness/readiness check |
+| `/health` | GET | Cheap, side-effect-free: `{status, hf_initialized, hf_connected, hf_circuit_open, groq_key_configured}` |
+| `/health/deep` | GET | Active probe: actually calls the HF Space + Groq, returns `{status, hf:{...}, groq:{...}}` |
 | `/api/regional-risk?lat=&lon=` | GET | Weather-driven pest risk levels for 4 nearby points |
 | `/chat` | POST | `{message, history, lang}` → `{reply}` (JSON; rate-limited 15/min) |
 | `/detect` | POST (multipart) | `image`, `message`, `history`, `lang`, optional MCQ fields (`plant_age`, `observed`, `affected_part`, `curl_dir`) → Server-Sent Events stream (rate-limited 5/min) |
@@ -113,6 +114,8 @@ before being shown to the farmer or matched against the knowledge base.
 | `ROBOFLOW_API_KEY` | Training only | Used by `train.py` to pull the IP102/PlantVillage dataset |
 | `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` | Deploy only | Used by `deploy.sh`/`upload_to_hf.py` to push weights to the HF Space |
 | `KAGGLE_KERNEL` | Deploy only, optional | `owner/slug` to auto-download trained weights via the `kaggle` CLI in `deploy.sh` |
+| `SENTRY_DSN` | No, optional | If set, enables Sentry error tracking (`sentry-sdk[flask]`) for unhandled exceptions; if unset, Sentry is never initialized — no-op |
+| `RETENTION_DAYS` | No | Days to keep farmer photos in `static/uploads/shadow_dataset/` and `static/uploads/telemetry_logs/` before `scripts/purge_old_telemetry.py` deletes them; defaults to `90`. See [PRIVACY.md](PRIVACY.md) |
 
 **On Render, these are set in the dashboard's Environment tab — never commit a
 `.env` file.** Locally, `chilliguru.py` and `app.py` (via `python-dotenv`/your shell)
@@ -138,10 +141,25 @@ make status       # git status + check for stray *.pt files
 ## Deployment
 
 - **Render** auto-deploys the Flask app from the `Procfile`:
-  `web: gunicorn app:app --timeout 120 --workers 1 --threads 1`. Environment
-  variables (`GROQ_API_KEY`, `HF_TOKEN`, `CORS_ALLOWED_ORIGINS`) are configured in
-  the Render dashboard, not in the repo. The live instance is
+  `web: gunicorn app:app --worker-class gthread --workers 1 --threads 4 --timeout 120`.
+  This uses a single process with 4 worker *threads* (not the default sync
+  worker) so a slow Groq/HF call doesn't block every other concurrent request —
+  important on the free tier's single worker. `render.yaml` pins the identical
+  `startCommand` for Blueprint-based deploys. Environment variables
+  (`GROQ_API_KEY`, `HF_TOKEN`, `CORS_ALLOWED_ORIGINS`, optional `SENTRY_DSN`)
+  are configured in the Render dashboard, not in the repo. The live instance is
   https://chilliguru.onrender.com.
+
+  **Concurrency / threaded worker — dashboard override warning:** if the
+  Render service's **Settings → Start Command** field has ever been set
+  manually in the dashboard, it **overrides the `Procfile` entirely** — Render
+  will keep running whatever command is in that field (e.g. the old
+  `--workers 1 --threads 1` sync invocation) regardless of what `Procfile` or
+  `render.yaml` say. This is a dashboard setting Claude Code cannot change.
+  **A human must open the service in the Render dashboard, check Settings →
+  Start Command, and either clear it (so the `Procfile` takes effect) or
+  manually update it to match** `gunicorn app:app --worker-class gthread
+  --workers 1 --threads 4 --timeout 120`, then trigger a redeploy.
 - **Hugging Face Space** (the primary detector model) is deployed separately via
   `deploy.sh`, which runs local tests, uploads `chilli_pest_v2.pt` + `model_info.json`
   + `hf_space_app.py` + `hf_space_requirements.txt` to the Space with
@@ -177,3 +195,43 @@ All LLM calls (web frontend and CLI) go through the backend — `GROQ_API_KEY` i
 read server-side via `os.getenv` and never reaches the browser. The web frontend
 calls the Flask `/chat`/`/detect` routes with a relative path so it works
 identically on Render and locally without hardcoding a domain.
+
+## Self-heal model promotion gate
+
+`self_heal.py` retrains the local detector on curated farmer telemetry
+(`static/uploads/telemetry_logs/`) and exports new weights to
+`weights/chilli_pest_model.onnx`. Before those weights are ever committed and
+deployed, `scripts/eval/run_validation_gate.py` must approve them:
+
+1. **Held-out set** — `scripts/eval/validation_manifest.json` lists
+   manually-verified images + labels that are never part of training. It
+   ships **empty**; you must populate it with real images before the gate can
+   promote anything — until then it fails closed (refuses to promote) rather
+   than approving blindly.
+2. **Seed a baseline** — once the manifest has real images, run
+   `python3 scripts/eval/run_validation_gate.py --seed-baseline` once to
+   record the current production model's macro-F1 in `models/registry.json`.
+3. **Normal runs** — every subsequent gate run compares a freshly retrained
+   candidate's macro-F1 against the registry's active baseline (minus a small
+   tolerance). Pass → promoted, backed up to `models/versions/<id>/`, and
+   recorded in `models/registry.json`. Fail → the existing model is kept and
+   the workflow's deploy step is skipped (see `.github/workflows/self_heal_deploy.yml`).
+4. **Rollback** — `python3 scripts/rollback_model.py` (or `make rollback-model`)
+   restores the previous registered version. Local-only; commit/push/redeploy
+   yourself afterwards if you're satisfied.
+5. **Manual approval (optional, human-only step)** — the workflow's deploy job
+   uses `environment: production-deploy`. To require a human to click Approve
+   before any auto-retrained model goes live, create that environment in this
+   repo's **Settings → Environments** and add required reviewers — this
+   cannot be configured from the workflow file itself.
+
+## Privacy & disclaimers
+
+The app serves chemical pesticide dosages and stores farmer photos/coarse
+location — see [PRIVACY.md](PRIVACY.md) for what's collected, retention
+(`RETENTION_DAYS`, default 90 days, purged by `scripts/purge_old_telemetry.py`),
+and how to request deletion. The UI shows a persistent notice covering both
+the advice disclaimer (confirm chemical dosages with a local KVK/agriculture
+officer before use) and the data notice; the same disclaimer is appended
+server-side to any `/chat` or `/detect` reply that mentions chemical
+treatment.

@@ -62,7 +62,50 @@
     if (btn) {
       btn.click();
     }
+    renderNoticeBar();
   });
+
+  // ── Advice-liability + data-privacy notice bar ───────────────────────────────
+  // Sourced from the same 5 languages this app already supports (en/te/hi/kn/ta
+  // — see LANG_PROMPTS above). kn/ta are intentionally left untranslated below
+  // (null) rather than guessed — getNoticeText() falls back to English for
+  // them so farmers still see correct text; a human reviewer should fill in
+  // a real Kannada/Tamil translation and remove the TODO.
+  const ADVICE_DISCLAIMER_TEXT = {
+    en: 'General guidance only, not a professional prescription. Before using any chemical spray, confirm the dosage and suitability with your local Krishi Vigyan Kendra (KVK) or agriculture officer. Organic methods are usually safer to try first.',
+    te: 'ఇది సాధారణ సలహా మాత్రమే, నిపుణుల ప్రిస్క్రిప్షన్ కాదు. ఏదైనా రసాయన మందు వాడే ముందు, మోతాదు మరియు అనుకూలతను మీ స్థానిక కృషి విజ్ఞాన కేంద్రం (KVK) లేదా వ్యవసాయ అధికారిని సంప్రదించి నిర్ధారించుకోండి. వీలైతే ముందుగా సేంద్రియ పద్ధతులు ప్రయత్నించడం సురక్షితం.',
+    hi: 'यह सामान्य सलाह है, विशेषज्ञ का नुस्खा नहीं। कोई भी रासायनिक दवा उपयोग करने से पहले, अपने स्थानीय कृषि विज्ञान केंद्र (KVK) या कृषि अधिकारी से मात्रा और उपयुक्तता की पुष्टि करें। संभव हो तो पहले जैविक तरीके आज़माना ज़्यादा सुरक्षित है।',
+    kn: null, // TODO(kn): needs a human-reviewed Kannada translation of the English string above
+    ta: null, // TODO(ta): needs a human-reviewed Tamil translation of the English string above
+  };
+
+  const PRIVACY_NOTICE_TEXT = {
+    en: 'Photos and approximate location may be stored to improve detection. No personal identity is collected.',
+    te: 'గుర్తింపును మెరుగుపరచడానికి ఫోటోలు మరియు సుమారు స్థానం నిల్వ చేయబడవచ్చు. వ్యక్తిగత గుర్తింపు ఏదీ సేకరించబడదు.',
+    hi: 'पहचान सुधारने के लिए फ़ोटो और अनुमानित स्थान सुरक्षित किए जा सकते हैं। कोई व्यक्तिगत पहचान एकत्र नहीं की जाती।',
+    kn: null, // TODO(kn): needs a human-reviewed Kannada translation of the English string above
+    ta: null, // TODO(ta): needs a human-reviewed Tamil translation of the English string above
+  };
+
+  const PRIVACY_LINK_TEXT = {
+    en: 'Privacy & how to request deletion',
+    te: 'గోప్యత & తొలగింపు కోసం ఎలా అడగాలి',
+    hi: 'गोपनीयता और डिलीट का अनुरोध कैसे करें',
+    kn: 'Privacy & how to request deletion', // TODO(kn): fallback to English pending translation
+    ta: 'Privacy & how to request deletion', // TODO(ta): fallback to English pending translation
+  };
+
+  function renderNoticeBar() {
+    const bar = document.getElementById('appNoticeBar');
+    if (!bar) return;
+    const disclaimer = ADVICE_DISCLAIMER_TEXT[currentLang] || ADVICE_DISCLAIMER_TEXT.en;
+    const privacy     = PRIVACY_NOTICE_TEXT[currentLang] || PRIVACY_NOTICE_TEXT.en;
+    const linkText     = PRIVACY_LINK_TEXT[currentLang] || PRIVACY_LINK_TEXT.en;
+    bar.innerHTML =
+      `<p>ℹ️ ${escapeHtml(disclaimer)}</p>` +
+      `<p>🔒 ${escapeHtml(privacy)} ` +
+      `<a href="/PRIVACY.md" target="_blank" rel="noopener">${escapeHtml(linkText)}</a></p>`;
+  }
 
   function captureGeolocation() {
     if (navigator.geolocation) {
@@ -584,6 +627,7 @@
     document.documentElement.lang = lang;
     document.querySelectorAll('.lang-capsule').forEach(b => b.classList.remove('active'));
     if (btn) btn.classList.add('active');
+    renderNoticeBar();
   }
 
   // ── Keyboard & auto-resize ─────────────────────────────────────────────────
@@ -797,8 +841,13 @@
 
       mapInitialized = true;
 
-      // Fetch regional risk data
-      const response = await fetch(`/api/regional-risk?lat=${lat}&lon=${lon}`);
+      // Fetch regional risk data — POST with a JSON body so the farmer's
+      // coordinates never appear in a URL / server access log (privacy).
+      const response = await fetch(`/api/regional-risk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lat, lon }),
+      });
       if (!response.ok) {
         throw new Error(`API returned status ${response.status}`);
       }

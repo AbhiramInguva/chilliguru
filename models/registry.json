@@ -1,0 +1,4 @@
+{
+  "_note": "Model promotion registry for the self-heal pipeline. Each entry records a promoted weights/chilli_pest_model.onnx version: when it was promoted, what telemetry produced it, its held-out metrics, and a backup copy under models/versions/<version_id>/. Written by scripts/eval/run_validation_gate.py on a successful promotion; read by it (the 'active' entry's metrics are the baseline new candidates must match) and by scripts/rollback_model.py. Do not hand-edit unless you know what you're doing -- prefer running the scripts. THIS FILE STARTS EMPTY: see README.md 'Self-heal model promotion gate' for the one-time --seed-baseline bootstrap step required before the gate will promote anything.",
+  "versions": []
+}

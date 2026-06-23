@@ -1,0 +1,21 @@
+# Render Blueprint — pins the same start command as Procfile so a fresh
+# Blueprint-based service (or "render.yaml sync") matches the threaded-worker
+# config exactly. NOTE: this does NOT override a Start Command already set
+# manually in the Render dashboard (Settings -> Start Command) — see the
+# README's "Concurrency / threaded worker" section for that human-only step.
+services:
+  - type: web
+    name: chilliguru
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --worker-class gthread --workers 1 --threads 4 --timeout 120
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: SENTRY_DSN
+        sync: false

@@ -1,0 +1,17 @@
+{
+  "_note": "Held-out validation set for the self-heal model-promotion gate (scripts/eval/run_validation_gate.py). These images must NEVER overlap with pan_india_pests.yaml's train/valid split or with anything self_heal.py harvests from static/uploads/telemetry_logs/ -- they exist purely to score a freshly retrained candidate model before it is allowed to replace the production weights. THIS FILE IS INTENTIONALLY EMPTY. A human (you) must populate 'images' with real, manually-verified examples -- one entry per held-out image -- before the gate can ever promote a model. Until then run_validation_gate.py refuses to promote (fails closed) rather than approving blindly.",
+  "schema_version": 1,
+  "valid_labels": [
+    "aphids", "whitefly_leaf_damage", "fruit_borer", "tobacco_caterpillar",
+    "yellow_thrips", "broad_mites", "invasive_black_thrips", "mealybugs",
+    "leaf_curl_virus", "bacterial_leaf_spot", "cercospora_leaf_spot",
+    "powdery_mildew", "healthy", "non_chilli"
+  ],
+  "label_note": "Each label must be one of valid_labels above -- these are detector.py's CORE_CLASSES plus 'healthy' and 'non_chilli' for negative/out-of-domain examples. Do not invent new label strings.",
+  "image_entry_example": {
+    "path": "scripts/eval/validation_images/example_aphids_01.jpg",
+    "label": "aphids",
+    "note": "Path is relative to the repo root. Replace this example by deleting it and adding real entries to 'images' below."
+  },
+  "images": []
+}

@@ -54,6 +54,7 @@ _CORE_CLASS_TO_KB = {
     "yellow_thrips":         "pests.thrips",
     "broad_mites":           "pests.mites",
     "invasive_black_thrips": "pests.thrips",
+    "mealybugs":             "pests.mealybugs",
     "leaf_curl_virus":       "diseases.leaf_curl_virus",
     "bacterial_leaf_spot":   "diseases.bacterial_leaf_spot",
     "powdery_mildew":        "diseases.powdery_mildew",
@@ -171,6 +172,7 @@ STRICT RULES:
 3. Always write cost in Rs (Indian Rupees)
 4. Only give advice about chilli farming in Andhra Pradesh and Telangana
 5. If the pest detection model gave results, use that as your starting point
+6. If a reference snippet you were given happens to mention a chemical name, do not repeat it as a suggestion — stay organic-only as in Rule 1. If you ever do mention a chemical for context, frame it as something to confirm with a local Krishi Vigyan Kendra (KVK) or agriculture officer, never as a direct prescription.
 """
 
 def call_groq(conversation, user_text, detection_context=None):

@@ -886,6 +886,23 @@ textarea::placeholder { color: var(--ink-200); }
   letter-spacing: 0.15px;
 }
 
+/* Advice-liability + data-privacy notice bar — persistent but compact, sits
+   just above the input dock so it's always visible near the chat/result
+   area without competing with the conversation for space. */
+.app-notice-bar {
+  background: var(--am-50);
+  border: 1px solid var(--am-200);
+  border-radius: 10px;
+  padding: 8px 14px;
+  margin: 0 24px 10px 24px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--am-900);
+}
+.app-notice-bar p { margin: 0; }
+.app-notice-bar p + p { margin-top: 3px; }
+.app-notice-bar a { color: var(--am-700); text-decoration: underline; }
+
 /* ─────────────────────────────────────────────────────────────────────────────
    Right Sidebar
 ───────────────────────────────────────────────────────────────────────────── */

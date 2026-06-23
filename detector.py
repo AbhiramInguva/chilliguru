@@ -1063,8 +1063,8 @@ def _differentiate_lookalike_pests(detections):
                     evals = sorted(evals, reverse=True)
                     if len(evals) >= 2 and evals[1] > 1e-5:
                         linearity = evals[0] / evals[1]
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("linearity_eig_failed", extra={"data": {"error": str(exc)}}, exc_info=True)
             
             if linearity > 2.2:
                 grouping_shape = "linear"  # linear alignment along leaf veins

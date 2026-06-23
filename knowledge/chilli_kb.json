@@ -183,6 +183,18 @@
         "chemical": null
       }
     },
+    "mealybugs": {
+      "id": "mealybugs",
+      "display_name": "Chilli Mealybugs",
+      "telugu_name": "పెండి నల్లి",
+      "category": "insect",
+      "key_symptoms": "White, cottony, waxy masses found clustered in leaf axils and on the undersides of leaves and tender shoots. Both nymphs and adults suck sap, weakening the plant and causing stunted growth and curling/yellowing of affected leaves. Excrete honeydew on which black sooty mould develops, affecting photosynthesis.",
+      "causal_agent": "Mealybugs (Pseudococcidae)",
+      "management": {
+        "organic": "Spray neem oil or insecticidal soap solution directly on visible colonies, covering leaf undersides and axils thoroughly. Encourage natural predators such as ladybird beetles, which feed on mealybugs.",
+        "chemical": null
+      }
+    },
     "flower_midge": {
       "id": "flower_midge",
       "display_name": "Chilli Flower Midge (Gall Midge)",

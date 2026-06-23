@@ -1,0 +1,57 @@
+name: Purge Old Telemetry Photos
+
+# Runs weekly to delete farmer-uploaded photos older than RETENTION_DAYS, per
+# the documented data-retention policy in PRIVACY.md. Also runnable manually.
+on:
+  schedule:
+    - cron: '0 3 * * 1'  # every Monday 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      retention_days:
+        description: 'Override RETENTION_DAYS for this run'
+        required: false
+        default: ''
+      execute:
+        description: 'Actually delete (true) or dry-run only (false)'
+        required: false
+        default: 'false'
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      # Scheduled runs always execute (that's the whole point of the weekly
+      # cron); manual workflow_dispatch runs default to dry-run unless the
+      # 'execute' input is explicitly set to 'true', so a human can preview
+      # first.
+      - name: Run purge script
+        id: purge
+        env:
+          RETENTION_DAYS: ${{ github.event.inputs.retention_days }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event.inputs.execute }}" = "true" ]; then
+            python3 scripts/purge_old_telemetry.py --execute
+            echo "executed=true" >> "$GITHUB_OUTPUT"
+          else
+            python3 scripts/purge_old_telemetry.py
+            echo "executed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit deletions (if any)
+        if: steps.purge.outputs.executed == 'true'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add static/uploads/shadow_dataset static/uploads/telemetry_logs
+          git commit -m "Purge telemetry photos older than retention window [skip ci]" || echo "No changes to commit"
+          git push origin main

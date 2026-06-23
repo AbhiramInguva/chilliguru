@@ -3,6 +3,7 @@ import gc
 import json
 import logging
 import os
+import random
 import re
 import sys
 import tempfile
@@ -16,13 +17,24 @@ import requests
 # Raises gen-0 threshold so the collector runs less aggressively per request,
 # preventing blocking pauses inside the hot /chat and /detect handlers.
 gc.set_threshold(1000, 10, 10)
-from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
+from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context, g, has_request_context
+from werkzeug.exceptions import HTTPException
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from gradio_client import Client, handle_file
 from groq import Groq
 import detector
+
+# ── Optional error tracking (Sentry) ──────────────────────────────────────────
+# Entirely no-op unless the SENTRY_DSN env var is set — local dev and any
+# deploy that doesn't configure it behaves exactly as before.
+_SENTRY_DSN = os.environ.get("SENTRY_DSN")
+if _SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.flask import FlaskIntegration
+    sentry_sdk.init(dsn=_SENTRY_DSN, integrations=[FlaskIntegration()],
+                     traces_sample_rate=0.0)
 
 # ── Global background worker pool (replaces per-request daemon Thread spawns) ──
 # max_workers=2 keeps total thread headroom well within the 150 MB container.
@@ -33,12 +45,34 @@ _http_session = requests.Session()
 
 # ── Structured JSON logger ────────────────────────────────────────────────────
 class _JsonFormatter(logging.Formatter):
+    """
+    Custom logging formatter that outputs log records as single-line JSON structures.
+    This ensures compatibility with structured logging systems (e.g., GCP, AWS, ELK stacks).
+    """
     def format(self, record):
+        """
+        Formats a standard LogRecord object into a structured JSON string.
+        
+        Args:
+            record (logging.LogRecord): The log record to format.
+            
+        Returns:
+            str: A JSON serialized string containing timestamp, log level, message,
+                 and any optional extra context or exception traceback.
+        """
         payload = {
             "ts":    self.formatTime(record, "%Y-%m-%dT%H:%M:%SZ"),
             "level": record.levelname,
             "event": record.getMessage(),
         }
+        # Thread the per-request correlation ID (set in _assign_request_id's
+        # before_request hook) into every log line emitted during that
+        # request, so a farmer's request_id in an error response can be
+        # grepped straight to the matching server logs.
+        if has_request_context():
+            rid = getattr(g, "request_id", None)
+            if rid:
+                payload["request_id"] = rid
         if hasattr(record, "data") and isinstance(record.data, dict):
             payload.update(record.data)
         if record.exc_info:
@@ -138,6 +172,20 @@ REGIONAL_TRANSLATION_MAP = {
 }
 
 def to_core_class(label_or_name):
+    """
+    Normalizes raw disease/pest labels (from vision models or user strings) 
+    into standard internal core class identifiers.
+    
+    This function bridges the gap between different vision model version outputs 
+    and the keys used in REGIONAL_TRANSLATION_MAP and _CORE_CLASS_TO_KB.
+    
+    Args:
+        label_or_name (str): Raw string label or classification name to normalize.
+        
+    Returns:
+        str | None: The normalized core class string (e.g., 'invasive_black_thrips'), 
+                    or None if no match is found.
+    """
     if not label_or_name:
         return None
     # Normalize underscores so Phase-2 labels like "yellow_thrips" match the
@@ -178,6 +226,15 @@ def to_core_class(label_or_name):
 _KB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge")
 
 def _load_kb_json(filename):
+    """
+    Loads and parses a JSON file from the local knowledge base directory.
+    
+    Args:
+        filename (str): Name of the JSON file (e.g. 'chilli_kb.json') located in knowledge/.
+        
+    Returns:
+        dict: Parsed JSON data, or an empty dictionary if loading/parsing fails.
+    """
     path = os.path.join(_KB_DIR, filename)
     try:
         with open(path, encoding="utf-8") as f:
@@ -193,7 +250,7 @@ _CHILLI_KB = _load_kb_json("chilli_kb.json")
 # This is a different keyspace from knowledge/kb_class_map.json, which maps the
 # 15 *raw vision-model* class names from model_info.json — both ultimately
 # resolve into the same chilli_kb.json. Core classes with no reference entry
-# (mealybugs, cercospora_leaf_spot) are intentionally omitted, not invented.
+# (cercospora_leaf_spot) are intentionally omitted, not invented.
 _CORE_CLASS_TO_KB = {
     "aphids":                "pests.aphids",
     "whitefly_leaf_damage":  "pests.whitefly",
@@ -202,6 +259,7 @@ _CORE_CLASS_TO_KB = {
     "yellow_thrips":         "pests.thrips",
     "broad_mites":           "pests.mites",
     "invasive_black_thrips": "pests.thrips",
+    "mealybugs":             "pests.mealybugs",
     "leaf_curl_virus":       "diseases.leaf_curl_virus",
     "bacterial_leaf_spot":   "diseases.bacterial_leaf_spot",
     "powdery_mildew":        "diseases.powdery_mildew",
@@ -209,7 +267,18 @@ _CORE_CLASS_TO_KB = {
 
 
 def _get_kb_entry(core_cls):
-    """Resolve a core-class id to its chilli_kb.json entry dict, or None."""
+    """
+    Resolves a standardized core class identifier to its matching entry 
+    in the agronomy knowledge base (chilli_kb.json).
+    
+    Args:
+        core_cls (str): Standardized core class string (e.g., 'aphids').
+        
+    Returns:
+        dict | None: The raw dictionary containing agronomy data (symptoms, agents, 
+                    management practices) for the resolved entry, or None if the class
+                    is not mapped or is missing from the database.
+    """
     ref = _CORE_CLASS_TO_KB.get(core_cls or "")
     if not ref:
         return None
@@ -219,10 +288,18 @@ def _get_kb_entry(core_cls):
 
 def _format_kb_context(core_cls):
     """
-    Render the curated-reference entry for core_cls into a Groq context block.
-    Organic management is surfaced first; any chemical detail is explicitly
-    labelled so the model keeps it confined to "Targeted Chemical
-    Interventions" per the ORGANIC ONLY rule in SYSTEM_PROMPT.
+    Renders the curated agronomy reference details for a given core class into a structured
+    text block to be injected into the LLM prompt context.
+    
+    This grounds the LLM in highly specific, verified agricultural rules (organic/chemical)
+    to prevent hallucinations and ensure local regulatory compliance.
+    
+    Args:
+        core_cls (str): Standardized core class identifier.
+        
+    Returns:
+        str: A formatted text block with symptoms, causal agents, and management methods,
+             or an empty string if no agronomy reference exists.
     """
     entry = _get_kb_entry(core_cls)
     if not entry:
@@ -252,13 +329,16 @@ def _format_kb_context(core_cls):
 
 def _build_deficiency_summary():
     """
-    Lightweight symptom -> deficiency summary built from chilli_kb.json's
-    deficiencies section, appended to /chat's system prompt. The vision model
-    cannot detect nutrient deficiencies (see chilli_kb.json's top-level note),
-    so this gives the text-only chat path a structured way to distinguish them
-    (e.g. iron vs magnesium vs manganese vs zinc) from a farmer's description —
-    no new ML classifier, just the curated-reference symptoms condensed to one
-    line per deficiency.
+    Builds a lightweight symptom-to-nutrient-deficiency text summary mapping 
+    from the deficiencies section of the knowledge base.
+    
+    This summary is appended to the system prompt of the text-only chat path (/chat)
+    to help the LLM diagnose issues like nitrogen/magnesium deficiencies based 
+    solely on the farmer's textual descriptions.
+    
+    Returns:
+        str: A multi-line string containing quick symptoms and primary diagnostic 
+             questions for common nutrient deficiencies.
     """
     deficiencies = _CHILLI_KB.get("deficiencies", {})
     if not deficiencies:
@@ -345,7 +425,24 @@ def _sev_label(c):
 
 
 def _apply_field_context(result, ctx):
-    """Re-rank detector output using the farmer's MCQ answers (bounded priors)."""
+    """
+    Re-ranks and adjusts detection confidence scores using a Bayesian-like prior system 
+    grounded in the farmer's multiple-choice field responses (e.g. observed symptoms, 
+    plant age, affected parts, and leaf curling direction).
+    
+    This function boosts confidence for logical class alignments (e.g. upward curling and 
+    Leaf Curl Virus) and applies penalties or hard limits for impossible scenarios (e.g. 
+    fruit borer on a seedling). Score updates are clamped to stay within a reasonable range 
+    and avoid overriding actual vision model evidence.
+    
+    Args:
+        result (dict): The detection results structure returned by the YOLO/HF cascade.
+        ctx (dict): The farmer's field context multiple-choice selections.
+        
+    Returns:
+        dict: The updated result structure with adjusted confidence scores, severity labels, 
+              and re-sorted detection lists.
+    """
     if not isinstance(result, dict) or not ctx or not any(ctx.values()):
         return result
     dets = result.get("all_detections")
@@ -429,7 +526,21 @@ _FIELD_ANSWER_TEXT = {
 
 
 def _format_field_answers(ctx):
-    """Render the farmer's MCQ answers into a Groq context block."""
+    """
+    Renders the farmer's multiple-choice field questionnaire answers into a 
+    structured text block to inject into the LLM context.
+    
+    This helps the LLM understand the contextual realities of the farm (e.g. age of the 
+    plant, visible signs) and address conflicts between the visual classifier and the 
+    user's observations.
+    
+    Args:
+        ctx (dict): The farmer's field context dictionary containing plant_age, observed,
+                    affected_part, and curl_dir.
+                    
+    Returns:
+        str: A formatted string list of user-submitted context answers, or an empty string.
+    """
     if not ctx:
         return ""
     lines = []
@@ -467,6 +578,21 @@ _CLEANUP_RE = {
 # burst — repeated SYSTEM_PROMPT cleaning calls become O(1) dict lookups.
 @functools.lru_cache(maxsize=128)
 def strip_cross_contamination(text, target_lang):
+    """
+    Filters and cleans target prompt strings to remove scripts from unselected regional languages.
+    
+    For example, if the target language is English ('en'), Hindi/Telugu/Kannada/Tamil Unicode characters 
+    are removed. If the target language is Telugu ('te'), other language scripts (Hindi, Tamil, Kannada) 
+    are stripped. This helps keep the LLM focused on a single target script and reduces prompt 
+    cross-contamination. Uses memoization (lru_cache) to optimize repeated calls across requests.
+    
+    Args:
+        text (str): The input text containing mixed scripts or formatting placeholders.
+        target_lang (str): The target language code ('en', 'te', 'hi', 'kn', 'ta').
+        
+    Returns:
+        str: Sanitized text containing only the target language scripts and common syntax.
+    """
     if not isinstance(text, str):
         return text
 
@@ -500,6 +626,33 @@ _IMAGE_SIGNATURES = [
 
 app = Flask(__name__, static_folder="static")
 
+# ── Global request body cap ───────────────────────────────────────────────────
+# Belt-and-suspenders alongside /detect's own MAX_IMAGE_BYTES check (which
+# inspects the image field specifically) — this rejects any oversized request
+# body, on any route, before Flask even buffers it into memory.
+app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # 5 MB
+
+# ── Per-request correlation ID ────────────────────────────────────────────────
+# Generated once per request (or reused from an incoming X-Request-ID header,
+# e.g. set by a load balancer), threaded into every log line for that request
+# via _JsonFormatter, echoed back in the X-Request-ID response header, and
+# included in every error response so a farmer's bug report can be matched
+# to server logs.
+@app.before_request
+def _assign_request_id():
+    g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+
+
+@app.after_request
+def _echo_request_id(response):
+    response.headers["X-Request-ID"] = getattr(g, "request_id", "")
+    return response
+
+
+def _current_request_id():
+    return getattr(g, "request_id", None) or str(uuid.uuid4())
+
+
 # ── CORS: restrict to explicitly allowed origins ──────────────────────────────
 # Previously CORS(app) allowed every origin to call every endpoint (including
 # the paid Groq-backed routes). Set CORS_ALLOWED_ORIGINS to a comma-separated
@@ -526,18 +679,121 @@ limiter = Limiter(
 
 @app.errorhandler(429)
 def rate_limit_exceeded(e):
-    log.warning("rate_limit_exceeded", extra={"data": {"remote_addr": request.remote_addr}})
+    rid = _current_request_id()
+    log.warning("rate_limit_exceeded", extra={"data": {"remote_addr": request.remote_addr, "request_id": rid}})
     return jsonify({
         "success": False,
         "error":   "Too many uploads. Please wait a minute before trying again.",
+        "request_id": rid,
     }), 429
+
+
+@app.errorhandler(404)
+def not_found(e):
+    rid = _current_request_id()
+    return jsonify({
+        "success": False,
+        "error":   "Not found",
+        "request_id": rid,
+    }), 404
+
+
+@app.errorhandler(413)
+def payload_too_large_global(e):
+    rid = _current_request_id()
+    log.warning("payload_too_large_global", extra={"data": {"request_id": rid}})
+    return jsonify({
+        "success": False,
+        "error":   "Payload too large",
+        "request_id": rid,
+    }), 413
+
+
+@app.errorhandler(500)
+def internal_server_error(e):
+    rid = _current_request_id()
+    log.error("internal_server_error", extra={"data": {"request_id": rid, "error": str(e)}}, exc_info=True)
+    return jsonify({
+        "success": False,
+        "error":   "Internal server error",
+        "request_id": rid,
+    }), 500
 
 _hf_client = None
 _hf_connect_error = None
 _hf_initialized = False
 _hf_init_lock = threading.Lock()
 
+# ── Retry / timeout helpers for external calls (HF Space, Groq) ──────────────
+# Bounded retry with jittered backoff so a single transient network blip
+# doesn't immediately trip the HF circuit breaker, plus a hard per-attempt
+# wall-clock timeout so a hung external call can never block past the
+# gunicorn worker --timeout (120s). Worst-case budget:
+#   HF:   up to 3 attempts x 15s + backoff (~3s)  ≈ 48s
+#   Groq (non-stream /chat, with retry): up to 3 x 30s + backoff (~3s) ≈ 93s
+#   Groq (stream /detect, single attempt, no retry): 45s
+# /detect's worst case (HF exhausted -> local cascade -> Groq stream) is
+# ≈ 48s + a few seconds of local ONNX inference + 45s ≈ 96s, leaving headroom
+# under the 120s timeout. /chat's worst case (Groq only) is ≈ 93s.
+_HF_PREDICT_TIMEOUT_S        = 15.0
+_HF_MAX_RETRIES              = 2   # up to 3 total attempts
+_GROQ_NONSTREAM_TIMEOUT_S    = 30.0
+_GROQ_NONSTREAM_MAX_RETRIES  = 2   # up to 3 total attempts
+_GROQ_STREAM_TIMEOUT_S       = 45.0  # single attempt — retrying mid-stream would duplicate content
+
+
+def _call_with_timeout(fn, timeout_s, *args, **kwargs):
+    """
+    Run fn(*args, **kwargs) in a worker thread with a hard wall-clock timeout.
+
+    Needed because the older-gradio_client fallback path in get_hf_client()
+    (no httpx_kwargs support) has no built-in timeout at all — this enforces
+    one regardless of the installed SDK version. Raises
+    concurrent.futures.TimeoutError if fn does not complete in time (the
+    worker thread is abandoned, not killed — acceptable here since predict()
+    calls don't hold locks shared with the rest of the app).
+    """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn, *args, **kwargs)
+        return future.result(timeout=timeout_s)
+
+
+def _retry_with_backoff(fn, max_retries, what):
+    """
+    Call fn() with up to max_retries retries on failure, using jittered
+    exponential backoff between attempts (0.3s, 0.6s, ... + up to 0.3s
+    jitter). Raises the last exception once every attempt has failed —
+    callers such as the HF circuit breaker only observe a failure after
+    retries are exhausted, not on the first blip.
+    """
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                delay = (0.3 * (2 ** attempt)) + random.uniform(0, 0.3)
+                log.warning("retry_attempt", extra={"data": {
+                    "what": what, "attempt": attempt + 1, "max_retries": max_retries,
+                    "delay_s": round(delay, 2), "error": str(exc),
+                }})
+                time.sleep(delay)
+    raise last_exc
+
+
 def get_hf_client():
+    """
+    Initializes and returns a thread-safe Gradio Client instance pointing to the 
+    Hugging Face spaces model endpoint.
+    
+    Uses double-checked locking to avoid duplicate network-bound connection attempts 
+    during concurrent requests at cold-start. Gracefully handles older versions of 
+    gradio_client that do not support the httpx_kwargs parameter.
+    
+    Returns:
+        gradio_client.Client | None: The initialized client object, or None if connection fails.
+    """
     global _hf_client, _hf_connect_error, _hf_initialized
     if _hf_initialized:
         return _hf_client
@@ -551,7 +807,7 @@ def get_hf_client():
             hf_token = os.environ.get("HF_TOKEN")
             try:
                 _hf_client = Client("inguvaaa/comprehensive", token=hf_token, verbose=False,
-                                   httpx_kwargs={"timeout": 30.0})
+                                   httpx_kwargs={"timeout": _HF_PREDICT_TIMEOUT_S})
             except TypeError:
                 # Older gradio_client versions don't accept httpx_kwargs — fall back gracefully
                 _hf_client = Client("inguvaaa/comprehensive", token=hf_token, verbose=False)
@@ -574,7 +830,16 @@ CB_COOLDOWN_SECS     = 60     # seconds to wait before retrying
 
 
 def _cb_is_open():
-    """Return True when the circuit is open and the cooldown has not yet elapsed."""
+    """
+    Checks if the Hugging Face spaces circuit breaker is open.
+    
+    If the circuit breaker is open, further calls to Hugging Face are skipped
+    until the cooldown period has elapsed. Once the cooldown has elapsed, the circuit 
+    breaker is reset to closed.
+    
+    Returns:
+        bool: True if the circuit breaker is open (blocking requests), False otherwise.
+    """
     global HF_CIRCUIT_OPEN, HF_FAILURE_COUNT, HF_RECOVERY_TIME
     if not HF_CIRCUIT_OPEN:
         return False
@@ -588,11 +853,18 @@ def _cb_is_open():
 
 
 def _cb_record_success():
+    """
+    Records a successful API call, resetting the failure counter back to zero.
+    """
     global HF_FAILURE_COUNT
     HF_FAILURE_COUNT = 0
 
 
 def _cb_record_failure():
+    """
+    Records a failed API call. If consecutive failures exceed the defined threshold,
+    opens the circuit breaker and sets a recovery cooldown window.
+    """
     global HF_CIRCUIT_OPEN, HF_FAILURE_COUNT, HF_RECOVERY_TIME
     HF_FAILURE_COUNT += 1
     if HF_FAILURE_COUNT >= CB_FAILURE_THRESHOLD:
@@ -605,10 +877,31 @@ def _cb_record_failure():
 
 
 def get_client():
+    """
+    Initializes and returns a client interface for the Groq API.
+    
+    Returns:
+        Groq: An instance of the Groq API client with credentials loaded from environment.
+    """
     return Groq(api_key=os.getenv("GROQ_API_KEY", ""))
 
 
 def call_hf_detector(image_bytes):
+    """
+    Performs visual pest/disease detection by forwarding raw image bytes 
+    to the Hugging Face spaces Gradio endpoint.
+    
+    The function dumps the bytes to a temporary local JPG file, passes it to 
+    the Gradio Client for transmission, parses the resulting text/JSON response, 
+    and handles circuit breaker logging on success or failure.
+    
+    Args:
+        image_bytes (bytes): The raw uploaded image data.
+        
+    Returns:
+        dict: A parsed dictionary containing top_detection, all_detections, and model confidence,
+              or a fallback error message dictionary.
+    """
     client = get_hf_client()
     if client is None:
         return {"error": f"HF client unavailable: {get_hf_connect_error() or 'startup connection failed'}"}
@@ -621,7 +914,14 @@ def call_hf_detector(image_bytes):
             tmp_path = tmp.name
 
         log.info("hf_call_start")
-        result = client.predict(handle_file(tmp_path), api_name="/predict")
+        file_arg = handle_file(tmp_path)
+
+        def _attempt():
+            return _call_with_timeout(
+                client.predict, _HF_PREDICT_TIMEOUT_S, file_arg, api_name="/predict"
+            )
+
+        result = _retry_with_backoff(_attempt, max_retries=_HF_MAX_RETRIES, what="hf_predict")
         hf_ms = round((time.time() - _t_hf) * 1000)
         _cb_record_success()
         log.info("hf_call_ok", extra={"data": {"duration_ms": hf_ms, "phase": "hf"}})
@@ -631,8 +931,8 @@ def call_hf_detector(image_bytes):
         if isinstance(result, str):
             try:
                 parsed_result = json.loads(result)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("hf_result_json_parse_failed", extra={"data": {"error": str(exc)}}, exc_info=True)
 
         if isinstance(parsed_result, list) and len(parsed_result) > 0:
             parsed_result = parsed_result[0]
@@ -674,7 +974,64 @@ def call_hf_detector(image_bytes):
             os.unlink(tmp_path)
 
 
-def _groq_stream_generator(messages, detection, is_low):
+# ── Chemical-advice liability disclaimer ──────────────────────────────────────
+# The app serves chemical pesticide dosages (knowledge/chilli_kb.json,
+# SYSTEM_PROMPT's "Targeted Chemical Interventions" section) that farmers act
+# on in the field; wrong dosage/timing can damage crops or harm people, and
+# pesticide recommendations carry regulatory weight in India. Any response
+# that actually surfaces chemical-treatment content gets this disclaimer
+# appended server-side — translations sourced from the same 5 languages the
+# app already supports (see _SUPPORTED_LANGS / _LANG_INSTRUCTION_MAP above).
+# NOTE: when the model replies in Telugu/Hindi/etc. it translates section
+# headers and even chemical names too (transliterated into the local script),
+# so English-only keyword matching misses real chemical content in non-English
+# replies. Markers below cover en/te/hi (the languages this codebase already
+# has confident native text for elsewhere — see _CHEMICAL_DISCLAIMER_TEXT).
+# kn/ta markers are not included — same TODO as the disclaimer translations.
+_CHEMICAL_CONTENT_MARKERS = (
+    # English
+    "targeted chemical interventions", "targeted inorganic regulation",
+    "targeted inorganic", "pesticide", "fungicide", "insecticide",
+    "neonicotinoid", "chemical spray", "active ingredient",
+    # Telugu — రసాయన (chemical), కీటకనాశక (insecticide), శిలీంద్రనాశక/ఫంగిసైడ్ (fungicide),
+    # పురుగు మందు (pesticide)
+    "రసాయన", "కీటకనాశక", "శిలీంద్రనాశక", "ఫంగిసైడ్", "పురుగు మందు",
+    # Hindi — रासायनिक/रसायन (chemical), कीटनाशक (pesticide/insecticide), फफूंदनाशक (fungicide)
+    "रासायनिक", "रसायन", "कीटनाशक", "फफूंदनाशक",
+)
+
+def _mentions_chemical_treatment(text: str) -> bool:
+    """
+    Heuristic check for whether a generated reply includes chemical-treatment
+    content, so the liability disclaimer is appended only when relevant (not
+    on every plain conversational reply). Primary signal is the structured
+    "Targeted Chemical Interventions" header the SYSTEM_PROMPT mandates for
+    diagnosis responses; the keyword markers (en/te/hi) are a fallback for
+    /chat's freer-form text, or for non-English replies whose translated
+    header text wouldn't otherwise match.
+    """
+    if not text:
+        return False
+    lower = text.lower()
+    return any(marker in lower for marker in _CHEMICAL_CONTENT_MARKERS)
+
+
+# kn/ta are intentionally absent — left as a TODO for a human-reviewed
+# translation rather than guessed. _get_chemical_disclaimer() falls back to
+# the English string for any language not listed here.
+_CHEMICAL_DISCLAIMER_TEXT = {
+    "en": "\n\n---\n_This is general guidance, not a professional prescription. Before using any chemical, confirm the dosage and suitability with your local Krishi Vigyan Kendra (KVK) or agriculture officer. Organic methods are usually safer to try first._",
+    "te": "\n\n---\n_ఇది సాధారణ సలహా మాత్రమే, నిపుణుల ప్రిస్క్రిప్షన్ కాదు. ఏదైనా రసాయన మందు వాడే ముందు, మోతాదు మరియు అనుకూలతను మీ స్థానిక కృషి విజ్ఞాన కేంద్రం (KVK) లేదా వ్యవసాయ అధికారిని సంప్రదించి నిర్ధారించుకోండి. వీలైతే ముందుగా సేంద్రియ పద్ధతులు ప్రయత్నించడం సురక్షితం._",
+    "hi": "\n\n---\n_यह सामान्य सलाह है, विशेषज्ञ का नुस्खा नहीं। कोई भी रासायनिक दवा उपयोग करने से पहले, अपने स्थानीय कृषि विज्ञान केंद्र (KVK) या कृषि अधिकारी से मात्रा और उपयुक्तता की पुष्टि करें। संभव हो तो पहले जैविक तरीके आज़माना ज़्यादा सुरक्षित है।_",
+    # TODO(kn): needs a human-reviewed Kannada translation of the English string above
+    # TODO(ta): needs a human-reviewed Tamil translation of the English string above
+}
+
+def _get_chemical_disclaimer(lang: str) -> str:
+    return _CHEMICAL_DISCLAIMER_TEXT.get(lang, _CHEMICAL_DISCLAIMER_TEXT["en"])
+
+
+def _groq_stream_generator(messages, detection, is_low, lang="en"):
     """
     SSE generator for the /detect streaming response.
 
@@ -696,18 +1053,27 @@ def _groq_stream_generator(messages, detection, is_low):
     # ── Frames 1-N: Groq token stream ─────────────────────────────────────────
     _t = time.time()
     try:
+        # Single attempt, no retry — a retry after the stream has already
+        # started yielding chunks to the client would duplicate content.
         response = get_client().chat.completions.create(
             model=MODEL,
             messages=messages,
             max_tokens=MAX_TOKENS,
             temperature=0.7,
             stream=True,
+            timeout=_GROQ_STREAM_TIMEOUT_S,
         )
+        full_text = []
         for chunk in response:
             delta = chunk.choices[0].delta.content
             if delta:
+                full_text.append(delta)
                 payload = {"type": "text", "text": delta}
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        if _mentions_chemical_treatment("".join(full_text)):
+            disclaimer = _get_chemical_disclaimer(lang)
+            yield f"data: {json.dumps({'type': 'text', 'text': disclaimer}, ensure_ascii=False)}\n\n"
 
         log.info("groq_stream_done", extra={"data": {
             "duration_ms": round((time.time() - _t) * 1000),
@@ -803,7 +1169,8 @@ When performing a plant diagnosis, structure your response strictly with these t
 ### Targeted Chemical Interventions
 [Provide a brief overview of targeted chemical/inorganic alternatives. Provide chemical details (e.g., active ingredients) but advise biological/organic alternatives first since you are ChilliGuru.
 - For viral profiles (such as Leaf Curl Virus), you must mandate recommendations targeting the whitefly vector using systemic chemical neonicotinoids (specifically Acetamiprid).
-- For fungal/bacterial spot/mildew profile detections (Cercospora Leaf Spot, Bacterial Leaf Spot, Powdery Mildew), you must output a clear markdown table contrasting organic choices (specifically Copper Hydroxide or Pseudomonas fluorescens) with targeted chemical choices.]
+- For fungal/bacterial spot/mildew profile detections (Cercospora Leaf Spot, Bacterial Leaf Spot, Powdery Mildew), you must output a clear markdown table contrasting organic choices (specifically Copper Hydroxide or Pseudomonas fluorescens) with targeted chemical choices.
+- Every chemical/active-ingredient you name must be framed as something to CONFIRM with a local agricultural expert before use — never as a direct, ready-to-apply prescription. Phrase it like "ask your local Krishi Vigyan Kendra (KVK) or agriculture officer to confirm the exact dosage for your field before applying [chemical name]," not as a standalone instruction to apply it. Do this in whatever language you are replying in.]
 
 For every recommended solution/intervention (both biological/organic and chemical), you must feature an explicit "Cost-Effectiveness & Speed Evaluation Table" in markdown format. The table must detail:
 - Intervention (name of the solution)
@@ -826,12 +1193,59 @@ ORGANIC ONLY (except when listing chemical details in Targeted Chemical Interven
 def index():
     return send_from_directory("static", "index.html")
 
+@app.route("/PRIVACY.md")
+def privacy_policy():
+    """Serves the data-privacy/retention policy linked from the UI notice bar."""
+    return send_from_directory(
+        os.path.dirname(os.path.abspath(__file__)), "PRIVACY.md", mimetype="text/markdown"
+    )
+
 @app.route("/health")
 def health():
+    """
+    Cheap liveness/readiness check — reads only cached in-process state and
+    never calls get_hf_client(), which would otherwise trigger a slow,
+    network-bound Gradio connect attempt on the very first hit if prewarm
+    hasn't completed yet. Safe for frequent load-balancer / uptime-monitor
+    polling. See /health/deep for an active probe of HF + Groq.
+    """
     return jsonify({
         "status": "ok",
-        "hf_connected": get_hf_client() is not None,
-        "groq_ready": bool(os.getenv("GROQ_API_KEY", "")),
+        "hf_initialized": _hf_initialized,
+        "hf_connected": _hf_initialized and _hf_client is not None,
+        "hf_circuit_open": HF_CIRCUIT_OPEN,
+        "groq_key_configured": bool(os.getenv("GROQ_API_KEY", "")),
+    })
+
+
+@app.route("/health/deep")
+def health_deep():
+    """
+    Active probe — actually calls the HF Space (via get_hf_client(), which
+    triggers the Gradio connect if not already initialized) and Groq (via a
+    cheap models.list() call). Slower and side-effecting; intended for
+    manual/ops checks, not frequent load-balancer polling.
+    """
+    hf_ok, hf_error = False, None
+    try:
+        client = get_hf_client()
+        hf_ok = client is not None
+        if not hf_ok:
+            hf_error = get_hf_connect_error()
+    except Exception as exc:
+        hf_error = str(exc)
+
+    groq_ok, groq_error = False, None
+    try:
+        get_client().models.list()
+        groq_ok = True
+    except Exception as exc:
+        groq_error = str(exc)
+
+    return jsonify({
+        "status": "ok" if (hf_ok and groq_ok) else "degraded",
+        "hf":   {"connected": hf_ok, "error": hf_error, "circuit_open": HF_CIRCUIT_OPEN},
+        "groq": {"reachable": groq_ok, "error": groq_error},
     })
 
 # ── Regional pest-risk rule table (built once at module load) ─────────────────
@@ -899,6 +1313,18 @@ _RISK_RULES = [
 
 
 def calculate_risks(t, h):
+    """
+    Evaluates current environmental risk levels for various chilli pests/diseases 
+    based on local temperature and relative humidity conditions.
+    
+    Args:
+        t (float): Temperature in degrees Celsius.
+        h (float): Relative humidity percentage.
+        
+    Returns:
+        list of dicts: Sorted list of active pest risks, ordered by severity 
+                       (Critical, High, Moderate, Low).
+    """
     risks = []
     for pest, label, telugu, tiers in _RISK_RULES:
         for cond, level, description in tiers:
@@ -915,11 +1341,36 @@ def calculate_risks(t, h):
     return risks
 
 
-@app.route("/api/regional-risk")
+@app.route("/api/regional-risk", methods=["GET", "POST"])
 def regional_risk():
+    """
+    Flask route to compute the regional pest and disease risk levels for the user's location
+    and surrounding coordinate grids.
+
+    Fetches real-time weather metrics (temperature and relative humidity) from the
+    Open-Meteo API using HTTP session connection pooling. Simulates coordinates for
+    neighboring watchpoints (East, North, South-West) to provide context for localized spreads.
+
+    Privacy note: prefer POST with a JSON body — coordinates in a request body
+    never land in this server's access logs or browser history, unlike query
+    strings. GET with ?lat=&lon= is kept only for backward compatibility with
+    existing callers/tests; the bundled frontend (static/js/app.js, index.html)
+    uses POST exclusively. Coordinates here are coarse (browser geolocation or
+    a fixed regional default) and are never persisted or linked to a stored
+    photo — see PRIVACY.md.
+
+    POST JSON Body / GET Query Params:
+        lat (float, optional): Latitude coordinate. Defaults to 16.5 (Guntur region).
+        lon (float, optional): Longitude coordinate. Defaults to 79.5 (Guntur region).
+
+    Returns:
+        Response: JSON array containing temperature, humidity, and calculated pest risks
+                  for the centroid and each of the three watchpoints.
+    """
+    payload = request.get_json(silent=True) or {}
     try:
-        lat = float(request.args.get("lat"))
-        lon = float(request.args.get("lon"))
+        lat = float(payload.get("lat", request.args.get("lat")))
+        lon = float(payload.get("lon", request.args.get("lon")))
     except (TypeError, ValueError):
         lat = 16.5
         lon = 79.5
@@ -977,6 +1428,21 @@ def regional_risk():
 @app.route("/chat", methods=["POST"])
 @limiter.limit("15 per minute")
 def chat():
+    """
+    Flask route handling text-only conversational assistance for chilli farmers.
+    
+    Sanitizes user messages to remove cross-language contamination scripts, resolves the 
+    preferred user language, and coordinates system prompting to answer farming and nutrient 
+    deficiency questions using Groq's Llama models.
+    
+    JSON Request Body:
+        message (str): User text input query.
+        history (list, optional): Previous chat message objects for multi-turn conversational context.
+        lang (str, optional): Overridden target language identifier.
+        
+    Returns:
+        Response: JSON object containing 'reply' text or an error message.
+    """
     try:
         data = request.get_json(silent=True) or {}
         message = data.get("message", "").strip()
@@ -1004,17 +1470,52 @@ def chat():
             + history
             + [{"role": "user", "content": message_clean}]
         )
-        response = get_client().chat.completions.create(
-            model=MODEL, messages=messages, max_tokens=MAX_TOKENS, temperature=0.7
+        def _groq_call():
+            return get_client().chat.completions.create(
+                model=MODEL, messages=messages, max_tokens=MAX_TOKENS,
+                temperature=0.7, timeout=_GROQ_NONSTREAM_TIMEOUT_S,
+            )
+
+        response = _retry_with_backoff(
+            _groq_call, max_retries=_GROQ_NONSTREAM_MAX_RETRIES, what="groq_chat"
         )
-        return jsonify({"reply": response.choices[0].message.content.strip()})
+        reply = response.choices[0].message.content.strip()
+        if _mentions_chemical_treatment(reply):
+            reply += _get_chemical_disclaimer(lang)
+        return jsonify({"reply": reply})
+    except HTTPException:
+        # e.g. RequestEntityTooLarge from a body over MAX_CONTENT_LENGTH —
+        # let it propagate to the matching @app.errorhandler instead of being
+        # flattened into a generic 500 below.
+        raise
     except Exception as e:
         log.error("chat_error", extra={"data": {"error_message": str(e)}}, exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "request_id": _current_request_id()}), 500
 
 @app.route("/detect", methods=["POST"])
 @limiter.limit("5 per minute")
 def detect():
+    """
+    Flask route serving visual diagnosis requests from uploaded farmer photos.
+    
+    This endpoint parses image attachments, invokes validation check constraints, 
+    triggers the remote HF vision classification model (or local fallbacks), applies 
+    field-context priors, and streams real-time LLM treatment diagnoses back to the client 
+    using Server-Sent Events (SSE).
+    
+    Multipart/Form Request Body:
+        image (file, optional): Uploaded image file (max 5 MB JPEG/PNG/WebP).
+        message (str, optional): User description notes or question context.
+        history (str, JSON-serialized list, optional): Multi-turn conversation context.
+        plant_age (str, optional): Stage selector ('seedling', 'vegetative', 'flowering', 'fruiting').
+        observed (str, optional): Symptom selector.
+        affected_part (str, optional): Affected plant part selector.
+        curl_dir (str, optional): Leaf curling direction ('upward', 'downward', 'none').
+        
+    Returns:
+        Response: Server-Sent Events stream containing metadata followed by token chunks, 
+                  or standard JSON response block on initial validation errors.
+    """
     _t0 = time.time()
     try:
         resp = _detect_inner()
@@ -1024,12 +1525,18 @@ def detect():
             "status_code": status_code,
         }})
         return resp
+    except HTTPException:
+        # Let Flask's normal dispatch handle these (e.g. RequestEntityTooLarge
+        # from a body over MAX_CONTENT_LENGTH) so they hit the matching
+        # @app.errorhandler and keep their real status code instead of being
+        # flattened into a generic 500 below.
+        raise
     except Exception as e:
         log.error("detect_unhandled_error", extra={"data": {
             "error_message": str(e),
             "duration_ms":   round((time.time() - _t0) * 1000),
         }}, exc_info=True)
-        return jsonify({"success": False, "error": "Internal Processing Error"}), 500
+        return jsonify({"success": False, "error": "Internal Processing Error", "request_id": _current_request_id()}), 500
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1048,16 +1555,20 @@ _LANG_INSTRUCTION_MAP = {
 
 def _resolve_request_language(user_msg: str) -> str:
     """
-    Sub-module 1: Resolve the target language for this request.
-
-    Priority:
-      1. Explicit 'lang' header / form param / query param.
-      2. Accept-Language header (first tag only).
-      3. Unicode script auto-detection on user_msg.
-      4. Default → 'en'.
-
-    Early-return fast-path: if an explicit, valid language tag is supplied
-    we skip all downstream script-scanning gates immediately.
+    Resolves the target language for the incoming HTTP request.
+    
+    Checks the request sources in order of priority:
+      1. Explicit 'lang' request headers, form parameters, or query parameters.
+      2. 'Accept-Language' header.
+      3. Unicode script auto-detection (using pre-compiled regex patterns for Telugu,
+         Hindi, Kannada, and Tamil) on the user's message body.
+      4. Default → English ('en').
+      
+    Args:
+        user_msg (str): The raw input message text from the user.
+        
+    Returns:
+        str: The resolved two-letter language code (e.g., 'en', 'te', 'hi', 'kn', 'ta').
     """
     # Priority 1 & 2 — explicit tag sources
     raw = (
@@ -1088,11 +1599,22 @@ def _resolve_request_language(user_msg: str) -> str:
 
 def _execute_guardrail_check(image_bytes: bytes, result: dict) -> dict | None:
     """
-    Sub-module 2: Apply the HF-space guardrail result filters.
-
-    Returns the cleaned result dict if it should proceed to Groq,
-    or None to signal that the local cascade must be invoked instead.
-    Raises a Flask Response directly for hard 4xx rejections.
+    Applies guardrail checks and out-of-domain result filters on Hugging Face predictions.
+    
+    If the image is detected as 'non_chilli' (non-chilli crop/out-of-domain input), it throws 
+    a 422 Unprocessable Entity HTTP response. If a low-level guardrail failure is detected,
+    or the prediction fails, it returns None to signal a fallback to the local YOLO cascade.
+    
+    Args:
+        image_bytes (bytes): The raw uploaded image file bytes.
+        result (dict): The parsed prediction payload from Hugging Face.
+        
+    Returns:
+        dict | None: The cleaned prediction dictionary if valid, or None if the local cascade 
+                     inference should run.
+                     
+    Raises:
+        _GuardrailReject: Carrying an HTTP 422 response if the crop is out-of-domain.
     """
     response_data = None
     if isinstance(result, dict):
@@ -1118,7 +1640,8 @@ def _execute_guardrail_check(image_bytes: bytes, result: dict) -> dict | None:
             conf_val = result["top_detection"].get("confidence")
     try:
         conf = float(conf_val) if conf_val is not None else 0.0
-    except Exception:
+    except Exception as exc:
+        log.warning("confidence_parse_failed", extra={"data": {"conf_val": str(conf_val), "error": str(exc)}}, exc_info=True)
         conf = None
 
     # Hotfix gasket
@@ -1131,7 +1654,7 @@ def _execute_guardrail_check(image_bytes: bytes, result: dict) -> dict | None:
         raise _GuardrailReject(
             jsonify({
                 "error": "Cannot identify crop. Please upload a clear photo of a chilli plant.",
-                "request_id": str(uuid.uuid4())
+                "request_id": _current_request_id()
             }), 422
         )
 
@@ -1168,10 +1691,24 @@ def _compile_groq_payload(
     image_bytes: bytes | None,
 ) -> str:
     """
-    Sub-module 3: Compile the Groq context string from the detection result.
-
-    Handles both the success path (top detection found) and the fallback path
-    (no confident detection — triggers questioning mode).
+    Compiles the final context instruction string to send to the Groq LLM model, 
+    based on the result of the vision classifications and context variables.
+    
+    If a confident detection is made, extracts details (confidence, leaf morphology,
+    matching agronomy entries) and compiles detailed system guidelines. If no confident 
+    detection is made, creates a fallback instructions string instructing the LLM 
+    to initiate "questioning mode" to gather more facts from the farmer.
+    
+    Args:
+        result (dict): The complete classification output dictionary.
+        top (dict | None): The primary identified detection object.
+        is_low (bool): Flag indicating if detection confidence is below the low-confidence threshold.
+        lang (str): The target language code.
+        user_msg (str): The farmer's input query.
+        image_bytes (bytes | None): Raw image data, used to trigger active learning storage on low confidence.
+        
+    Returns:
+        str: Compiled instruction string containing structured agronomic context for the LLM.
     """
     lang_names = {"en": "English", "hi": "Hindi", "te": "Telugu",
                   "kn": "Kannada", "ta": "Tamil"}
@@ -1263,6 +1800,7 @@ def _compile_groq_payload(
             f"Provide a dual-structured treatment approach with 'Biological & Organic Interventions' and 'Targeted Chemical Interventions'. Enforce explicit biological sub-class targeting inside Biological sections (recommend specific bacterial vectors like Bacillus thuringiensis, viral vectors like NPV, or fungal pathogens tailored strictly to the diagnosed lifecycle). "
             f"If the diagnosis is a viral profile (Leaf Curl Virus), you must mandate recommendations targeting the whitefly vector using biological fungal spores (specifically Beauveria bassiana) or systemic chemical neonicotinoids (specifically Acetamiprid). "
             f"If the diagnosis is a fungal/bacterial profile (Cercospora Leaf Spot, Bacterial Leaf Spot, Powdery Mildew), you must output clear tables contrasting organic treatments (such as Copper Hydroxide, Pseudomonas fluorescens, or systemic bio-agents) with targeted chemical choices. "
+            f"Frame every named chemical as something to confirm with a local Krishi Vigyan Kendra (KVK) or agriculture officer before use, never as a direct ready-to-apply prescription. "
             f"For every suggested solution, you must explicitly render a 'Cost-Effectiveness & Speed Evaluation Table' in markdown showing: Estimated Cost per Acre in INR (₹), Efficacy Speed (e.g., Immediate 24hr knockdown vs 5-day systemic spread), and Environmental Residual Protection windows. End with one prevention tip."
             + low_note
         )
@@ -1282,16 +1820,29 @@ def _compile_groq_payload(
             f"then give a diagnosis followed by a dual-structured treatment plan under 'Biological & Organic Interventions' and 'Targeted Chemical Interventions'. Enforce explicit biological sub-class targeting (specific bacterial, viral, or fungal pathogens tailored to the lifecycle). "
             f"If the diagnosis resolves to a viral profile (Leaf Curl Virus), you must mandate recommendations targeting the whitefly vector using biological fungal spores (Beauveria bassiana) or systemic chemical neonicotinoids (Acetamiprid). "
             f"If the diagnosis resolves to a fungal/bacterial profile (Cercospora Leaf Spot, Bacterial Leaf Spot, Powdery Mildew), contrast organic treatments (Copper Hydroxide, Pseudomonas fluorescens, or systemic bio-agents) with targeted chemical choices in clear tables. "
+            f"Frame every named chemical as something to confirm with a local Krishi Vigyan Kendra (KVK) or agriculture officer before use, never as a direct ready-to-apply prescription. "
             f"For every suggestion, include a 'Cost-Effectiveness & Speed Evaluation Table' in markdown showing: Estimated Cost per Acre in INR (₹), Efficacy Speed, and Environmental Residual Protection windows. End with one prevention tip."
         )
 
 
 def _detect_inner():
+    """
+    Internal execution method for the `/detect` route.
+    
+    Extracts the image and metadata inputs from the Flask request, runs image type 
+    and size validations, coordinates remote Hugging Face and local YOLO models, 
+    applies context re-ranking, constructs the Groq model prompt context, 
+    and sets up the streaming SSE response.
+    
+    Returns:
+        tuple | Response: Flask Response representing the SSE stream generator or JSON error block.
+    """
     user_msg    = request.form.get("message", "").strip()
     history_raw = request.form.get("history", "[]")
     try:
         history = json.loads(history_raw)
-    except Exception:
+    except Exception as exc:
+        log.warning("history_json_parse_failed", extra={"data": {"error": str(exc)}}, exc_info=True)
         history = []
 
     if not user_msg:
@@ -1320,7 +1871,7 @@ def _detect_inner():
             log.warning("payload_too_large", extra={"data": {"size_bytes": file_size}})
             return jsonify({
                 "error": "Payload too large",
-                "request_id": str(uuid.uuid4())
+                "request_id": _current_request_id()
             }), 413
 
         # ── Magic-byte type verification (first 12 bytes only) ────────────────
@@ -1435,7 +1986,7 @@ def _detect_inner():
 
     messages = [{"role": "system", "content": system_content}] + history + [{"role": "user", "content": groq_context}]
     return Response(
-        stream_with_context(_groq_stream_generator(messages, detection, is_low)),
+        stream_with_context(_groq_stream_generator(messages, detection, is_low, lang)),
         mimetype="text/event-stream",
         headers={
             "Cache-Control":     "no-cache",
@@ -1444,6 +1995,11 @@ def _detect_inner():
     )
 
 # ── Pre-warm models ───────────────────────────────────────────────────────────
+# Runs once at module import time (i.e. at gunicorn worker boot), not inside a
+# request handler — intentional cold-start mitigation so the first real
+# request doesn't pay ONNX session creation cost. No external pinger needed:
+# Render's free tier sleeps the whole process on idle, so a keep-alive ping
+# only delays the inevitable cold start rather than avoiding it.
 log.info("prewarm_start")
 try:
     detector.prewarm_models()
