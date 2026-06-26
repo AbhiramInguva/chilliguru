@@ -57,6 +57,12 @@ static/uploads/telemetry_logs/*
 !static/uploads/telemetry_logs/cloud_integration_test.json
 !static/uploads/telemetry_logs/cloud_integration_test_raw.jpg
 
+# Outcome-tracking cases (case_store.py's default JSONFileCaseStore) — runtime
+# data, not committed. NOT durable on Render's free-tier ephemeral disk; see
+# case_store.py module docstring and README.md's "Outcome tracking" section.
+static/uploads/cases/*
+!static/uploads/cases/.gitkeep
+
 # Self-heal model registry backups — small ONNX copies, same pattern as weights/*.onnx above
 !models/versions/**/*.onnx
 

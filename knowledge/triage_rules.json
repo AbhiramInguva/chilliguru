@@ -1,0 +1,338 @@
+{
+  "_note": "Vision-guided adaptive triage rulebook. Every question/option below is sourced from the symptom text already in knowledge/chilli_kb.json (pests/diseases/deficiencies sections) -- nothing here invents a new symptom or dosage. Selection engine (triage.py) picks, for the CURRENT live candidate set, the first not-yet-asked question whose 'applies_to' overlaps >=2 of the current leading candidates. Each option carries score deltas applied to the candidate-score dict to re-rank. kn/ta question and option text are intentionally null (TODO) where no human-reviewed translation exists yet -- the engine falls back to English for display, matching the pattern used for the advice/privacy disclaimers in app.py and static/js/app.js.",
+  "resolve_margin": 12.0,
+  "max_questions": { "pest": 2, "deficiency": 3 },
+  "pest_questions": [
+    {
+      "id": "pest_curl_direction",
+      "applies_to": ["yellow_thrips", "invasive_black_thrips", "broad_mites", "leaf_curl_virus"],
+      "source": "chilli_kb.json pests.thrips ('curling of leaves UPWARD'), pests.mites ('DOWNWARD curling... inverted boat-shaped'), diseases.leaf_curl_virus ('Leaves curl towards the midrib')",
+      "question": {
+        "en": "Are the leaves curling upward (like a cup) or downward (like a boat)?",
+        "te": "ఆకులు పైకి (కప్పు ఆకారంలో) ముడుచుకుంటున్నాయా లేదా కిందికి (పడవ ఆకారంలో) ముడుచుకుంటున్నాయా?",
+        "hi": "पत्तियाँ ऊपर की तरफ (कटोरे जैसी) मुड़ रही हैं या नीचे की तरफ (नाव जैसी)?",
+        "kn": null,
+        "ta": null
+      },
+      "options": [
+        {
+          "key": "upward",
+          "label": { "en": "Curling upward (cup shape)", "te": "పైకి ముడుచుకోవడం (కప్పు ఆకారం)", "hi": "ऊपर की तरफ मुड़ना (कटोरे जैसा)", "kn": null, "ta": null },
+          "scores": { "yellow_thrips": 10, "invasive_black_thrips": 10, "leaf_curl_virus": 10, "broad_mites": -12 }
+        },
+        {
+          "key": "downward",
+          "label": { "en": "Curling downward (boat shape)", "te": "కిందికి ముడుచుకోవడం (పడవ ఆకారం)", "hi": "नीचे की तरफ मुड़ना (नाव जैसा)", "kn": null, "ta": null },
+          "scores": { "broad_mites": 12, "yellow_thrips": -10, "invasive_black_thrips": -10, "leaf_curl_virus": -10 }
+        },
+        {
+          "key": "not_sure",
+          "label": { "en": "Not sure", "te": "తెలియదు", "hi": "पता नहीं", "kn": null, "ta": null },
+          "scores": {}
+        }
+      ]
+    },
+    {
+      "id": "pest_insects_visible",
+      "applies_to": ["yellow_thrips", "invasive_black_thrips", "leaf_curl_virus"],
+      "source": "chilli_kb.json pests.thrips (visible nymphs/adults lacerating tissue) vs diseases.leaf_curl_virus (no insect described -- whitefly is only the transmission vector, not seen feeding on the curled leaf itself)",
+      "question": {
+        "en": "Can you see tiny insects on the leaves, or no insects at all -- just the curling and leaf distortion?",
+        "te": "ఆకులపై చిన్న చిన్న పురుగులు కనిపిస్తున్నాయా, లేదా పురుగులు ఏవీ లేకుండా ఆకులు ముడుచుకోవడం మాత్రమే కనిపిస్తోందా?",
+        "hi": "पत्तियों पर छोटे-छोटे कीड़े दिख रहे हैं, या कोई कीड़ा नहीं दिख रहा -- सिर्फ पत्तियाँ मुड़ी हुई और बेढंगी दिख रही हैं?",
+        "kn": null,
+        "ta": null
+      },
+      "options": [
+        {
+          "key": "yes_tiny_insects",
+          "label": { "en": "Yes, tiny insects visible", "te": "అవును, చిన్న పురుగులు కనిపిస్తున్నాయి", "hi": "हाँ, छोटे कीड़े दिख रहे हैं", "kn": null, "ta": null },
+          "scores": { "yellow_thrips": 10, "invasive_black_thrips": 10, "leaf_curl_virus": -10 }
+        },
+        {
+          "key": "no_insects_seen",
+          "label": { "en": "No insects, just curling", "te": "పురుగులు లేవు, ముడుచుకోవడం మాత్రమే", "hi": "कोई कीड़ा नहीं, सिर्फ मुड़ना", "kn": null, "ta": null },
+          "scores": { "leaf_curl_virus": 10, "yellow_thrips": -8, "invasive_black_thrips": -8 }
+        },
+        {
+          "key": "not_sure",
+          "label": { "en": "Not sure", "te": "తెలియదు", "hi": "पता नहीं", "kn": null, "ta": null },
+          "scores": {}
+        }
+      ]
+    },
+    {
+      "id": "pest_insect_appearance",
+      "applies_to": ["aphids", "whitefly_leaf_damage", "mealybugs"],
+      "source": "chilli_kb.json pests.aphids ('large numbers... undersurface of leaves'), pests.whitefly ('nymphs and adults'), pests.mealybugs ('White, cottony, waxy masses')",
+      "question": {
+        "en": "What do the insects look like -- tiny white flies that fly up when you touch the plant, white cottony fluffy clumps, or small soft greenish bugs clustered together?",
+        "te": "ఆ పురుగులు ఎలా ఉన్నాయి — మొక్కను తాకినప్పుడు ఎగిరే చిన్న తెల్ల ఈగల్లా ఉన్నాయా, తెల్లని పత్తి లాంటి మెత్తని గుంపులుగా ఉన్నాయా, లేదా చిన్న పచ్చని మెత్తని పురుగులు గుంపులుగా ఉన్నాయా?",
+        "hi": "वे कीड़े कैसे दिखते हैं — पौधे को छूने पर उड़ने वाली छोटी सफेद मक्खियाँ, सफेद रूई जैसे मुलायम गुच्छे, या छोटे मुलायम हरे रंग के कीड़े झुंड में?",
+        "kn": null,
+        "ta": null
+      },
+      "options": [
+        {
+          "key": "tiny_white_flies",
+          "label": { "en": "Tiny white flies", "te": "చిన్న తెల్ల ఈగలు", "hi": "छोटी सफेद मक्खियाँ", "kn": null, "ta": null },
+          "scores": { "whitefly_leaf_damage": 12, "aphids": -8, "mealybugs": -8 }
+        },
+        {
+          "key": "white_cottony",
+          "label": { "en": "White cottony clumps", "te": "తెల్లని పత్తి గుంపులు", "hi": "सफेद रूई जैसे गुच्छे", "kn": null, "ta": null },
+          "scores": { "mealybugs": 12, "aphids": -8, "whitefly_leaf_damage": -8 }
+        },
+        {
+          "key": "small_soft_clustered",
+          "label": { "en": "Small soft green/black bugs in clusters", "te": "చిన్న మెత్తని పచ్చ/నలుపు పురుగులు గుంపులుగా", "hi": "छोटे मुलायम हरे/काले कीड़े झुंड में", "kn": null, "ta": null },
+          "scores": { "aphids": 12, "whitefly_leaf_damage": -8, "mealybugs": -8 }
+        },
+        {
+          "key": "not_sure",
+          "label": { "en": "Not sure", "te": "తెలియదు", "hi": "पता नहीं", "kn": null, "ta": null },
+          "scores": {}
+        }
+      ]
+    },
+    {
+      "id": "pest_surface_appearance",
+      "applies_to": ["powdery_mildew", "bacterial_leaf_spot", "cercospora_leaf_spot"],
+      "source": "chilli_kb.json diseases.powdery_mildew ('White powdery coating') vs diseases.bacterial_leaf_spot ('circular, water-soaked spots... raised brown lesions')",
+      "question": {
+        "en": "Is there a white powdery dust on the leaves, or dark brown/black spots?",
+        "te": "ఆకులపై తెల్లని పొడి కనిపిస్తోందా, లేదా ముదురు గోధుమ/నలుపు రంగు మచ్చలు కనిపిస్తున్నాయా?",
+        "hi": "पत्तियों पर सफेद पाउडर जैसा दिखता है, या गहरे भूरे/काले रंग के धब्बे?",
+        "kn": null,
+        "ta": null
+      },
+      "options": [
+        {
+          "key": "white_powder",
+          "label": { "en": "White powdery dust", "te": "తెల్లని పొడి", "hi": "सफेद पाउडर जैसा", "kn": null, "ta": null },
+          "scores": { "powdery_mildew": 15, "bacterial_leaf_spot": -10, "cercospora_leaf_spot": -10 }
+        },
+        {
+          "key": "dark_spots",
+          "label": { "en": "Dark brown/black spots", "te": "ముదురు గోధుమ/నలుపు మచ్చలు", "hi": "गहरे भूरे/काले धब्बे", "kn": null, "ta": null },
+          "scores": { "bacterial_leaf_spot": 8, "cercospora_leaf_spot": 8, "powdery_mildew": -12 }
+        },
+        {
+          "key": "not_sure",
+          "label": { "en": "Not sure", "te": "తెలియదు", "hi": "पता नहीं", "kn": null, "ta": null },
+          "scores": {}
+        }
+      ],
+      "unresolved_note": "If 'dark_spots' is chosen, bacterial_leaf_spot and cercospora_leaf_spot stay tied with no further discriminating question available: cercospora_leaf_spot has no knowledge/chilli_kb.json entry (intentionally not invented -- see app.py's _CORE_CLASS_TO_KB comment), so there is no sourced symptom text to split it from bacterial_leaf_spot. Falls back to most-likely + general note."
+    },
+    {
+      "id": "pest_hole_shape",
+      "applies_to": ["fruit_borer", "tobacco_caterpillar"],
+      "source": "chilli_kb.json pests.fruit_borer ('ROUND hole on fruits') vs pests.tobacco_caterpillar ('irregular holes on the leaves and fruits')",
+      "question": {
+        "en": "Are the holes a single round hole in the fruit, or irregular ragged holes in leaves and fruit?",
+        "te": "కాయలో ఒక్క గుండ్రని రంధ్రం ఉందా, లేదా ఆకులు మరియు కాయలలో అస్తవ్యస్తమైన రంధ్రాలు ఉన్నాయా?",
+        "hi": "फल में एक गोल छेद है, या पत्तियों और फलों में बेढंगे, अनियमित छेद हैं?",
+        "kn": null,
+        "ta": null
+      },
+      "options": [
+        {
+          "key": "round_hole_fruit",
+          "label": { "en": "Single round hole in fruit", "te": "కాయలో గుండ్రని రంధ్రం", "hi": "फल में एक गोल छेद", "kn": null, "ta": null },
+          "scores": { "fruit_borer": 12, "tobacco_caterpillar": -8 }
+        },
+        {
+          "key": "irregular_holes_leaves_fruit",
+          "label": { "en": "Irregular holes in leaves and fruit", "te": "ఆకులు, కాయలలో అస్తవ్యస్త రంధ్రాలు", "hi": "पत्तियों और फलों में अनियमित छेद", "kn": null, "ta": null },
+          "scores": { "tobacco_caterpillar": 12, "fruit_borer": -8 }
+        },
+        {
+          "key": "not_sure",
+          "label": { "en": "Not sure", "te": "తెలియదు", "hi": "पता नहीं", "kn": null, "ta": null },
+          "scores": {}
+        }
+      ]
+    }
+  ],
+  "deficiency_questions": [
+    {
+      "id": "def_leaf_age",
+      "applies_to": null,
+      "source": "chilli_kb.json deficiencies.* -- iron/manganese/zinc/boron/calcium/copper affect YOUNG leaves first; magnesium/nitrogen/phosphorous/potassium/molybdenum affect OLD leaves first",
+      "question": {
+        "en": "Is the yellowing mainly on the young/top leaves, or the old/bottom leaves?",
+        "te": "పసుపు రంగు మార్పు ఎక్కువగా కొత్త/పైభాగపు ఆకులలో ఉందా, లేదా పాత/కింది ఆకులలో ఉందా?",
+        "hi": "पीलापन ज़्यादातर नई/ऊपर की पत्तियों में है, या पुरानी/नीचे की पत्तियों में?",
+        "kn": null,
+        "ta": null
+      },
+      "options": [
+        {
+          "key": "young_top",
+          "label": { "en": "Young / top leaves", "te": "కొత్త / పైభాగపు ఆకులు", "hi": "नई / ऊपर की पत्तियाँ", "kn": null, "ta": null },
+          "scores": { "iron": 8, "manganese": 8, "zinc": 8, "boron": 8, "calcium": 8, "copper": 8,
+                      "magnesium": -8, "nitrogen": -8, "phosphorous": -8, "potassium": -8, "molybdenum": -4 }
+        },
+        {
+          "key": "old_bottom",
+          "label": { "en": "Old / bottom leaves", "te": "పాత / కింది ఆకులు", "hi": "पुरानी / नीचे की पत्तियाँ", "kn": null, "ta": null },
+          "scores": { "magnesium": 8, "nitrogen": 8, "phosphorous": 8, "potassium": 8, "molybdenum": 8,
+                      "iron": -8, "manganese": -8, "zinc": -8, "boron": -8, "calcium": -8, "copper": -8 }
+        },
+        {
+          "key": "not_sure",
+          "label": { "en": "Not sure / all over", "te": "తెలియదు / అన్నీ", "hi": "पता नहीं / सभी जगह", "kn": null, "ta": null },
+          "scores": {}
+        }
+      ]
+    },
+    {
+      "id": "def_young_curl",
+      "applies_to": ["iron", "manganese", "zinc", "boron", "calcium", "copper"],
+      "source": "chilli_kb.json deficiencies.iron/manganese (no curling, just interveinal chlorosis) vs deficiencies.zinc ('Little Leaf'/curling), boron ('curling of leaves'), calcium ('upward curling'), copper ('cupping and curling')",
+      "question": {
+        "en": "Are the young leaves also curling or twisting out of shape, or do they just look yellow without curling?",
+        "te": "కొత్త ఆకులు కూడా ముడుచుకుంటున్నాయా లేదా వంకరగా మారుతున్నాయా, లేదా ముడుచుకోకుండా కేవలం పసుపు రంగులో ఉన్నాయా?",
+        "hi": "क्या नई पत्तियाँ भी मुड़ रही हैं या बेढंगी हो रही हैं, या वे सिर्फ पीली दिख रही हैं बिना मुड़े?",
+        "kn": null,
+        "ta": null
+      },
+      "options": [
+        {
+          "key": "curling_twisting",
+          "label": { "en": "Curling / twisting", "te": "ముడుచుకోవడం / వంకరగా మారడం", "hi": "मुड़ना / बेढंगा होना", "kn": null, "ta": null },
+          "scores": { "zinc": 8, "boron": 8, "calcium": 8, "copper": 8, "iron": -10, "manganese": -10 }
+        },
+        {
+          "key": "just_yellow_no_curl",
+          "label": { "en": "Just yellow, no curling", "te": "ముడుచుకోకుండా పసుపు మాత్రమే", "hi": "सिर्फ पीली, मुड़ी नहीं", "kn": null, "ta": null },
+          "scores": { "iron": 10, "manganese": 10, "zinc": -8, "boron": -8, "calcium": -8, "copper": -8 }
+        },
+        {
+          "key": "not_sure",
+          "label": { "en": "Not sure", "te": "తెలియదు", "hi": "पता नहीं", "kn": null, "ta": null },
+          "scores": {}
+        }
+      ]
+    },
+    {
+      "id": "def_specks",
+      "applies_to": ["iron", "manganese"],
+      "source": "chilli_kb.json deficiencies.manganese: 'small, brown necrotic spots/specks... key feature distinguishing it from iron deficiency'",
+      "question": {
+        "en": "On the yellow parts of the leaf, are there small brown spots or specks?",
+        "te": "ఆకు పసుపు భాగాలపై చిన్న గోధుమ రంగు మచ్చలు ఉన్నాయా?",
+        "hi": "पत्ती के पीले हिस्सों पर छोटे भूरे धब्बे या निशान हैं?",
+        "kn": null,
+        "ta": null
+      },
+      "options": [
+        {
+          "key": "yes_specks",
+          "label": { "en": "Yes, brown specks", "te": "అవును, గోధుమ మచ్చలు", "hi": "हाँ, भूरे निशान", "kn": null, "ta": null },
+          "scores": { "manganese": 15, "iron": -10 }
+        },
+        {
+          "key": "no_specks",
+          "label": { "en": "No, smooth pale yellow", "te": "లేదు, మెత్తని పసుపు", "hi": "नहीं, सिर्फ हल्की पीली", "kn": null, "ta": null },
+          "scores": { "iron": 15, "manganese": -10 }
+        },
+        {
+          "key": "not_sure",
+          "label": { "en": "Not sure", "te": "తెలియదు", "hi": "पता नहीं", "kn": null, "ta": null },
+          "scores": {}
+        }
+      ]
+    },
+    {
+      "id": "def_young_curl_detail",
+      "applies_to": ["zinc", "boron", "calcium", "copper"],
+      "source": "chilli_kb.json deficiencies.zinc ('Little Leaf... smaller, narrower'), calcium ('blossom end rot of the fruit'), boron ('flower and fruit dropping... cracking of fruits'), copper ('cupping... stunted growth')",
+      "question": {
+        "en": "Which matches best -- new leaves much smaller than normal, fruit rotting at the bottom tip, flowers/fruit dropping or fruit cracking, or leaves cupping inward with the plant looking stunted?",
+        "te": "మీరు చూస్తున్నదానికి ఏది బాగా సరిపోతుంది — కొత్త ఆకులు సాధారణం కంటే చాలా చిన్నగా ఉన్నాయా, కాయ అడుగు భాగంలో కుళ్ళిపోతోందా, పూలు/కాయలు రాలిపోతున్నాయా లేదా కాయలు పగులుతున్నాయా, లేదా ఆకులు లోపలికి కప్పు ఆకారంలో ముడుచుకుని మొక్క ఎదుగుదల ఆగిపోయిందా?",
+        "hi": "आपको जो दिख रहा है उससे सबसे ज़्यादा क्या मिलता है — नई पत्तियाँ सामान्य से बहुत छोटी हैं, फल नीचे से सड़ रहा है, फूल/फल गिर रहे हैं या फल फट रहे हैं, या पत्तियाँ अंदर की तरफ कटोरे जैसी मुड़ रही हैं और पौधे की बढ़त रुक गई है?",
+        "kn": null,
+        "ta": null
+      },
+      "options": [
+        {
+          "key": "little_leaf_smaller",
+          "label": { "en": "New leaves much smaller", "te": "కొత్త ఆకులు చిన్నగా", "hi": "नई पत्तियाँ छोटी", "kn": null, "ta": null },
+          "scores": { "zinc": 15, "boron": -5, "calcium": -5, "copper": -5 }
+        },
+        {
+          "key": "fruit_blossom_rot",
+          "label": { "en": "Fruit rotting at the tip", "te": "కాయ అడుగున కుళ్ళడం", "hi": "फल नीचे से सड़ना", "kn": null, "ta": null },
+          "scores": { "calcium": 15, "zinc": -5, "boron": -5, "copper": -5 }
+        },
+        {
+          "key": "flower_fruit_drop_crack",
+          "label": { "en": "Flowers/fruit dropping or cracking", "te": "పూలు/కాయలు రాలటం, పగలటం", "hi": "फूल/फल गिरना या फटना", "kn": null, "ta": null },
+          "scores": { "boron": 15, "zinc": -5, "calcium": -5, "copper": -5 }
+        },
+        {
+          "key": "cupping_stunted",
+          "label": { "en": "Leaves cupping, plant stunted", "te": "ఆకులు కప్పులా, మొక్క ఎదుగుదల ఆగడం", "hi": "पत्तियाँ कटोरे जैसी, पौधा रुका हुआ", "kn": null, "ta": null },
+          "scores": { "copper": 15, "zinc": -5, "boron": -5, "calcium": -5 }
+        },
+        {
+          "key": "not_sure",
+          "label": { "en": "Not sure", "te": "తెలియదు", "hi": "पता नहीं", "kn": null, "ta": null },
+          "scores": {}
+        }
+      ]
+    },
+    {
+      "id": "def_old_pattern",
+      "applies_to": ["magnesium", "nitrogen", "phosphorous", "potassium", "molybdenum"],
+      "source": "chilli_kb.json deficiencies.magnesium ('veins remain dark green'), nitrogen ('uniform INCLUDING the veins'), phosphorous ('irregular spots of brown to dark brown dead tissue'), potassium ('starts at leaf margins'), molybdenum ('Whiptail... distorted leaves')",
+      "question": {
+        "en": "Which matches the old/bottom leaves best -- veins stay green while the area between them turns yellow, the whole leaf including the veins turns yellow evenly, brown dead patches appear, yellowing starts at the leaf edges, or the leaves look twisted and strap-shaped?",
+        "te": "పాత/కింది ఆకులకు ఏది బాగా సరిపోతుంది — ఈనెలు ఆకుపచ్చగా ఉండి మధ్య భాగం పసుపు రంగులోకి మారుతుందా, మొత్తం ఆకు (ఈనెలతో సహా) సమానంగా పసుపు రంగులోకి మారుతుందా, గోధుమ రంగు చనిపోయిన మచ్చలు కనిపిస్తున్నాయా, ఆకు అంచుల నుండి పసుపు రంగు మొదలవుతుందా, లేదా ఆకులు వంకరగా/పట్టీ ఆకారంలో ఉన్నాయా?",
+        "hi": "पुरानी/नीचे की पत्तियों पर सबसे ज़्यादा क्या मिलता है — नसें हरी रहती हैं और उनके बीच का हिस्सा पीला हो जाता है, पूरी पत्ती (नसों समेत) समान रूप से पीली हो जाती है, भूरे रंग के मरे हुए धब्बे दिखते हैं, पीलापन पत्ती के किनारों से शुरू होता है, या पत्तियाँ मुड़ी हुई/पट्टी जैसी दिखती हैं?",
+        "kn": null,
+        "ta": null
+      },
+      "options": [
+        {
+          "key": "interveinal_veins_green",
+          "label": { "en": "Veins stay green, area between yellows", "te": "ఈనెలు ఆకుపచ్చ, మధ్య భాగం పసుపు", "hi": "नसें हरी, बीच का हिस्सा पीला", "kn": null, "ta": null },
+          "scores": { "magnesium": 15 }
+        },
+        {
+          "key": "uniform_whole_leaf",
+          "label": { "en": "Whole leaf evenly yellow", "te": "మొత్తం ఆకు సమానంగా పసుపు", "hi": "पूरी पत्ती समान रूप से पीली", "kn": null, "ta": null },
+          "scores": { "nitrogen": 15 }
+        },
+        {
+          "key": "brown_dead_patches",
+          "label": { "en": "Brown dead patches/spots", "te": "గోధుమ చనిపోయిన మచ్చలు", "hi": "भूरे मरे हुए धब्बे", "kn": null, "ta": null },
+          "scores": { "phosphorous": 15 }
+        },
+        {
+          "key": "margins_yellow_first",
+          "label": { "en": "Starts at leaf edges", "te": "ఆకు అంచుల నుండి మొదలవుతుంది", "hi": "पत्ती के किनारों से शुरू", "kn": null, "ta": null },
+          "scores": { "potassium": 15 }
+        },
+        {
+          "key": "distorted_strap_shaped",
+          "label": { "en": "Twisted / strap-shaped leaves", "te": "వంకర / పట్టీ ఆకారపు ఆకులు", "hi": "मुड़ी / पट्टी जैसी पत्तियाँ", "kn": null, "ta": null },
+          "scores": { "molybdenum": 15 }
+        },
+        {
+          "key": "not_sure",
+          "label": { "en": "Not sure", "te": "తెలియదు", "hi": "पता नहीं", "kn": null, "ta": null },
+          "scores": {}
+        }
+      ]
+    }
+  ],
+  "unresolved_clusters": [
+    {
+      "candidates": ["bacterial_leaf_spot", "cercospora_leaf_spot"],
+      "reason": "cercospora_leaf_spot has no knowledge/chilli_kb.json entry (intentionally not invented -- see app.py's _CORE_CLASS_TO_KB comment: 'Core classes with no reference entry... are intentionally omitted, not invented'). pest_surface_appearance can isolate powdery_mildew but cannot split these two further without inventing symptom text. Needs either a real cercospora_leaf_spot KB entry or a human-provided discriminator."
+    }
+  ]
+}

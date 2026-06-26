@@ -95,6 +95,81 @@
     ta: 'Privacy & how to request deletion', // TODO(ta): fallback to English pending translation
   };
 
+  // ── Outcome-tracking: "save this case" card shown after every diagnosis ────
+  const CASE_SAVE_TEXT = {
+    intro: {
+      en: 'Save this to check your crop’s progress later:',
+      te: 'తర్వాత మీ పంట పరిస్థితిని తెలుసుకోవడానికి దీన్ని సేవ్ చేసుకోండి:',
+      hi: 'बाद में अपनी फसल की स्थिति जानने के लिए इसे सेव करें:',
+      kn: null, // TODO(kn): needs a human-reviewed Kannada translation
+      ta: null, // TODO(ta): needs a human-reviewed Tamil translation
+    },
+    copy: {
+      en: 'Copy link', te: 'లింక్ కాపీ చేయండి', hi: 'लिंक कॉपी करें', kn: null, ta: null,
+    },
+    copied: {
+      en: 'Copied!', te: 'కాపీ అయింది!', hi: 'कॉपी हो गया!', kn: null, ta: null,
+    },
+  };
+
+  function _t(dict, lang) {
+    return (dict && (dict[lang] || dict.en)) || '';
+  }
+
+  // Shown right when the diagnosis card appears (case_id is created
+  // server-side before the SSE stream starts — see app.py's _create_case).
+  // Best-effort by design: if case_id is missing (no durable store
+  // configured, or storage failed), this is simply never called and the
+  // rest of the diagnosis flow is completely unaffected.
+  function renderCaseSaveCard(caseId) {
+    const container = document.getElementById('chatMessages');
+    const link = `${window.location.origin}/case/${caseId}`;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'message bot';
+
+    const av = document.createElement('div');
+    av.className = 'avatar bot';
+    av.textContent = '🌶️';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble case-save-card';
+
+    const introEl = document.createElement('div');
+    introEl.textContent = _t(CASE_SAVE_TEXT.intro, currentLang);
+    bubble.appendChild(introEl);
+
+    const codeEl = document.createElement('div');
+    codeEl.className = 'case-save-code';
+    codeEl.textContent = caseId;
+    bubble.appendChild(codeEl);
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'case-save-copy-btn';
+    copyBtn.textContent = _t(CASE_SAVE_TEXT.copy, currentLang);
+    copyBtn.onclick = () => {
+      navigator.clipboard?.writeText(link).then(() => {
+        copyBtn.textContent = _t(CASE_SAVE_TEXT.copied, currentLang);
+        setTimeout(() => { copyBtn.textContent = _t(CASE_SAVE_TEXT.copy, currentLang); }, 1800);
+      });
+    };
+    bubble.appendChild(copyBtn);
+
+    const linkEl = document.createElement('a');
+    linkEl.className = 'case-save-link';
+    linkEl.href = link;
+    linkEl.textContent = link;
+    linkEl.target = '_blank';
+    linkEl.rel = 'noopener';
+    bubble.appendChild(linkEl);
+
+    wrap.appendChild(av);
+    wrap.appendChild(bubble);
+    container.appendChild(wrap);
+    container.scrollTop = container.scrollHeight;
+  }
+
   function renderNoticeBar() {
     const bar = document.getElementById('appNoticeBar');
     if (!bar) return;
@@ -376,6 +451,206 @@
     return txt;
   }
 
+  // ── Vision-guided adaptive triage ────────────────────────────────────────────
+  // /detect (and /detect/triage-answer) can return EITHER an SSE stream (a
+  // resolved diagnosis, including the simple 3-part triage card) or a small
+  // JSON payload. The JSON payload is either a guardrail rejection (existing
+  // behaviour) or — new — {triage:{...}} carrying the next adaptive question
+  // to ask. Both response shapes funnel through this one handler so the
+  // initial /detect call and every /detect/triage-answer round-trip behave
+  // identically.
+  async function handleDetectionResponse(res, userText) {
+    const contentType = res.headers.get('content-type') || '';
+
+    if (contentType.includes('text/event-stream')) {
+      await consumeDetectionStream(res, userText);
+      return;
+    }
+
+    const data = await res.json();
+    removeTyping();
+
+    if (data.triage) {
+      renderTriageQuestion(data.triage, userText);
+      return;
+    }
+
+    // ── Guardrail rejections / legacy JSON replies (unchanged) ────────────────
+    let reply;
+    let detectionCard = null;
+
+    if (data.success === false) {
+      if (isNonChilliResponse(200, data.error, data.label || (data.top_detection || {}).label)) {
+        addMessage('bot', '<div class="alert-card-warning" style="background:#fef2f2; border:1px solid #f87171; color:#991b1b; padding:16px; border-radius:12px; font-weight:500; margin:8px 0; font-family:\'DM Sans\',sans-serif; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">⚠️ Clear Capture Required: Please upload a close-up photo of a chilli leaf or fruit for analysis.</div>');
+        isLoading = false;
+        document.getElementById('sendBtn').disabled = false;
+        selectedImage = null;
+        return;
+      }
+      reply = data.error || 'Unable to process this image. Please try again.';
+      if (data.phase === 3) {
+        detectionCard = `<div class="warning-badge-inline">⚠️ Low Confidence Warning</div>`;
+      }
+    } else {
+      // Defensive fallback for any unexpected old-style JSON response
+      reply = data.reply || '';
+      detectionCard = data.detection
+        ? buildDetectionCard(data.detection, data.low_confidence)
+        : null;
+    }
+    conversation.push({ role: 'user',      content: userText });
+    conversation.push({ role: 'assistant', content: reply });
+    addMessage('bot', reply, null, detectionCard);
+  }
+
+  // ── SSE stream consumer (extracted from the old inline sendMessage logic) ──
+  async function consumeDetectionStream(res, userText) {
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer    = '';   // partial SSE data accumulator
+    let fullText  = '';   // complete assembled response text
+    let textNode  = null; // live DOM node we write chunks into
+    let metaSeen  = false;
+
+    outer: while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE events are separated by double newlines
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop(); // keep any incomplete trailing fragment
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith('data: ')) continue;
+        let event;
+        try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+        if (event.type === 'meta') {
+          // First frame: detection card data → build bubble shell now
+          const cardHtml = event.detection
+            ? buildDetectionCard(event.detection, event.low_confidence)
+            : null;
+          removeTyping();
+          textNode = addStreamingBubble(cardHtml);
+          conversation.push({ role: 'user', content: userText });
+          metaSeen = true;
+          if (event.case_id) renderCaseSaveCard(event.case_id);
+
+        } else if (event.type === 'text' && textNode) {
+          fullText += event.text;
+          updateStreamingDisplay(textNode, fullText);
+          const msgs = document.getElementById('chatMessages');
+          msgs.scrollTop = msgs.scrollHeight;
+
+        } else if (event.type === 'done') {
+          if (textNode) textNode.classList.remove('streaming-cursor');
+          conversation.push({ role: 'assistant', content: fullText });
+          break outer;
+
+        } else if (event.type === 'error') {
+          // Mid-stream Groq error: update existing bubble or show new one
+          const errMsg = event.error || 'Streaming failed. Please try again.';
+          if (textNode) {
+            textNode.classList.remove('streaming-cursor');
+            textNode.textContent = errMsg;
+          } else {
+            removeTyping();
+            addMessage('bot', errMsg);
+          }
+          break outer;
+        }
+      }
+    }
+
+    // Stream closed before we ever received a meta frame (network drop)
+    if (!metaSeen) {
+      removeTyping();
+      addMessage('bot', 'Connection interrupted. Please try again.');
+    }
+  }
+
+  // Renders one adaptive-triage question as a bot bubble with clickable
+  // option buttons — one question per turn, plain language, never the raw
+  // symptom text. `userText` is threaded through so the eventual resolved
+  // card can still reference the farmer's original description.
+  function renderTriageQuestion(triagePayload, userText) {
+    hideWelcome();
+    removeTyping();
+    const container = document.getElementById('chatMessages');
+
+    const wrap = document.createElement('div');
+    wrap.className = 'message bot';
+
+    const av = document.createElement('div');
+    av.className = 'avatar bot';
+    av.textContent = '🌶️';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+
+    const lbl = document.createElement('div');
+    lbl.className = 'bubble-name';
+    lbl.textContent = 'ChilliGuru';
+    bubble.appendChild(lbl);
+
+    const qText = document.createElement('div');
+    qText.textContent = triagePayload.question;
+    bubble.appendChild(qText);
+
+    const optionsWrap = document.createElement('div');
+    optionsWrap.className = 'triage-options';
+    triagePayload.options.forEach(opt => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'triage-option-btn';
+      btn.textContent = opt.label;
+      btn.onclick = () => answerTriageQuestion(triagePayload, opt, userText, optionsWrap);
+      optionsWrap.appendChild(btn);
+    });
+    bubble.appendChild(optionsWrap);
+
+    wrap.appendChild(av);
+    wrap.appendChild(bubble);
+    container.appendChild(wrap);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  // Sends the farmer's chosen answer to /detect/triage-answer and renders
+  // whatever comes back (the next question, or the final resolved card) via
+  // the same handleDetectionResponse() used by the initial /detect call.
+  async function answerTriageQuestion(triagePayload, chosenOption, userText, optionsWrapEl) {
+    optionsWrapEl.querySelectorAll('.triage-option-btn').forEach(b => { b.disabled = true; });
+    addMessage('user', chosenOption.label);
+    addTyping();
+
+    try {
+      const res = await fetch(`${API_BASE}/detect/triage-answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          state:       triagePayload.state,
+          question_id: triagePayload.question_id,
+          answer_key:  chosenOption.key,
+          history:     conversation,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Triage error');
+      }
+      await handleDetectionResponse(res, userText);
+    } catch (err) {
+      removeTyping();
+      addMessage('bot', `Sorry, something went wrong: ${err.message}`);
+    }
+
+    isLoading = false;
+    document.getElementById('sendBtn').disabled = false;
+  }
+
   // ── Send message ───────────────────────────────────────────────────────────
   async function sendMessage() {
     const input    = document.getElementById('userInput');
@@ -430,7 +705,7 @@
               checkNonChilli = true;
             }
           } catch {}
-          
+
           if (checkNonChilli) {
             removeTyping();
             addMessage('bot', '<div class="alert-card-warning" style="background:#fef2f2; border:1px solid #f87171; color:#991b1b; padding:16px; border-radius:12px; font-weight:500; margin:8px 0; font-family:\'DM Sans\',sans-serif; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">⚠️ Clear Capture Required: Please upload a close-up photo of a chilli leaf or fruit for analysis.</div>');
@@ -442,106 +717,7 @@
           throw new Error(errMsg);
         }
 
-        const contentType = res.headers.get('content-type') || '';
-
-        if (contentType.includes('text/event-stream')) {
-          // ── SSE streaming path ─────────────────────────────────────────────
-          const reader  = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer    = '';   // partial SSE data accumulator
-          let fullText  = '';   // complete assembled response text
-          let textNode  = null; // live DOM node we write chunks into
-          let metaSeen  = false;
-
-          outer: while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-
-            // SSE events are separated by double newlines
-            const parts = buffer.split('\n\n');
-            buffer = parts.pop(); // keep any incomplete trailing fragment
-
-            for (const part of parts) {
-              const line = part.trim();
-              if (!line.startsWith('data: ')) continue;
-              let event;
-              try { event = JSON.parse(line.slice(6)); } catch { continue; }
-
-              if (event.type === 'meta') {
-                // First frame: detection card data → build bubble shell now
-                const cardHtml = event.detection
-                  ? buildDetectionCard(event.detection, event.low_confidence)
-                  : null;
-                removeTyping();
-                textNode = addStreamingBubble(cardHtml);
-                conversation.push({ role: 'user', content: userText });
-                metaSeen = true;
-
-              } else if (event.type === 'text' && textNode) {
-                fullText += event.text;
-                updateStreamingDisplay(textNode, fullText);
-                const msgs = document.getElementById('chatMessages');
-                msgs.scrollTop = msgs.scrollHeight;
-
-              } else if (event.type === 'done') {
-                if (textNode) textNode.classList.remove('streaming-cursor');
-                conversation.push({ role: 'assistant', content: fullText });
-                break outer;
-
-              } else if (event.type === 'error') {
-                // Mid-stream Groq error: update existing bubble or show new one
-                const errMsg = event.error || 'Streaming failed. Please try again.';
-                if (textNode) {
-                  textNode.classList.remove('streaming-cursor');
-                  textNode.textContent = errMsg;
-                } else {
-                  removeTyping();
-                  addMessage('bot', errMsg);
-                }
-                break outer;
-              }
-            }
-          }
-
-          // Stream closed before we ever received a meta frame (network drop)
-          if (!metaSeen) {
-            removeTyping();
-            addMessage('bot', 'Connection interrupted. Please try again.');
-          }
-
-        } else {
-          // ── JSON path: guardrail rejections returned with HTTP 200 ──────────
-          // (success:false / phase:3 — backend emits plain JSON, not a stream)
-          const data = await res.json();
-          removeTyping();
-          let reply;
-          let detectionCard = null;
-
-          if (data.success === false) {
-            if (isNonChilliResponse(200, data.error, data.label || (data.top_detection || {}).label)) {
-              addMessage('bot', '<div class="alert-card-warning" style="background:#fef2f2; border:1px solid #f87171; color:#991b1b; padding:16px; border-radius:12px; font-weight:500; margin:8px 0; font-family:\'DM Sans\',sans-serif; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">⚠️ Clear Capture Required: Please upload a close-up photo of a chilli leaf or fruit for analysis.</div>');
-              isLoading = false;
-              document.getElementById('sendBtn').disabled = false;
-              selectedImage = null;
-              return;
-            }
-            reply = data.error || 'Unable to process this image. Please try again.';
-            if (data.phase === 3) {
-              detectionCard = `<div class="warning-badge-inline">⚠️ Low Confidence Warning</div>`;
-            }
-          } else {
-            // Defensive fallback for any unexpected old-style JSON response
-            reply = data.reply || '';
-            detectionCard = data.detection
-              ? buildDetectionCard(data.detection, data.low_confidence)
-              : null;
-          }
-          conversation.push({ role: 'user',      content: userText });
-          conversation.push({ role: 'assistant', content: reply });
-          addMessage('bot', reply, null, detectionCard);
-        }
+        await handleDetectionResponse(res, userText);
 
       } else {
         // ── Text-only path: /chat endpoint (unchanged) ─────────────────────────

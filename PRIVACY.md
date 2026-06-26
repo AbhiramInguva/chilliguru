@@ -14,8 +14,14 @@ Data Protection (DPDP) Act, and linked directly from the app's UI notice.
 | Approximate device location (browser geolocation) | When you grant location permission, for the Regional Risk Map or alongside a photo upload | Looks up local weather (temperature/humidity) to estimate regional pest risk |
 | Chat messages | When you type a question | Sent to Groq's LLM API to generate farming advice; conversation history is kept only in your browser tab, not stored server-side |
 | Low-confidence / rejected detection photos | Automatically, when the detector is unsure or rejects an image as not-a-chilli-plant | Saved for human review and potential future model retraining ("shadow dataset") |
+| Outcome-tracking case record (diagnosis label, treatment summary, language, a short case code) | Automatically, after every completed diagnosis | Lets you return later via a saved link (`/case/<case_id>`) to report whether the treatment worked |
+| Follow-up outcome (Better/Same/Worse/Not sure) + optional follow-up photo | Only if you open your saved case link and choose to report back | Saved alongside the original diagnosis as labelled training data (see "Outcome tracking" below) and used to offer further help if the treatment isn't working |
 
 **No account, name, phone number, or other direct identity is collected.**
+The case code (e.g. `7K2QXJ9`) is an opaque, randomly generated identifier —
+it identifies the *case*, not you. It is shown to you once and only usable
+by whoever has the saved link; it does not appear in any URL query string,
+analytics tool, or third-party service.
 Photos and coordinates are not linked to any login or identity — the app has
 no user accounts.
 
@@ -32,14 +38,25 @@ no user accounts.
   (Open-Meteo) and immediately discarded after computing the risk response —
   it is **never written to disk or to the shadow dataset alongside a photo**.
   See "Geolocation and photos are not linked" below.
+- Outcome-tracking case records go to `static/uploads/cases/` (one small
+  JSON file per case, written by `case_store.py`'s default
+  `JSONFileCaseStore`). **Important:** on Render's free tier this disk is
+  ephemeral — case records do not survive a redeploy/restart unless a
+  persistent disk is mounted and `CASE_STORE_PATH` points at it. See
+  [README.md](README.md#outcome-tracking-farmer-initiated-first-version)
+  and `case_store.py`'s module docstring. Outcome follow-up photos are
+  saved into the same `static/uploads/shadow_dataset/` directory as other
+  active-learning captures, with a `.json` sidecar tagging the original
+  diagnosis, treatment, days elapsed, and reported outcome.
 
 ## How long it's kept — retention
 
 Stored photos (`static/uploads/shadow_dataset/` and
-`static/uploads/telemetry_logs/`) are subject to a retention window
-controlled by the `RETENTION_DAYS` environment variable (default: **90
-days**, see [README.md](README.md#environment-variables)). Files older than
-this window are deleted by [scripts/purge_old_telemetry.py](scripts/purge_old_telemetry.py),
+`static/uploads/telemetry_logs/`) and outcome-tracking case records
+(`static/uploads/cases/`) are subject to a retention window controlled by
+the `RETENTION_DAYS` environment variable (default: **90 days**, see
+[README.md](README.md#environment-variables)). Files older than this
+window are deleted by [scripts/purge_old_telemetry.py](scripts/purge_old_telemetry.py),
 which can be run:
 
 - Manually: `python3 scripts/purge_old_telemetry.py --execute` (or `make purge-telemetry` for a dry-run preview)
@@ -92,6 +109,13 @@ is a model-quality safeguard, not a privacy control, but it's worth noting:
 retraining only ever touches model *weights*; it does not extract or expose
 any individual farmer's photo or location to anyone outside the retraining
 job itself.
+
+Outcome-tracking follow-up photos (saved to `static/uploads/shadow_dataset/`
+with a `.json` metadata sidecar — diagnosis, treatment, days elapsed,
+reported outcome) follow the exact same path as any other shadow-dataset
+capture: a human must manually curate them into `telemetry_logs/` before
+they're ever used in a retraining run. Capturing and tagging an outcome
+does **not** trigger retraining by itself.
 
 ## How to request deletion
 

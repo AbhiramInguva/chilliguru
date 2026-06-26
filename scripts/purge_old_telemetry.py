@@ -1,9 +1,15 @@
 """
 purge_old_telemetry.py — deletes farmer-uploaded photos older than RETENTION_DAYS.
 
-Targets the two directories the app writes farmer photos into:
-  - static/uploads/shadow_dataset/   (app.py / detector.py active-learning captures)
+Targets the directories the app writes farmer photos/case data into:
+  - static/uploads/shadow_dataset/   (app.py / detector.py active-learning captures,
+                                       including outcome-tagged follow-up photos +
+                                       their .json metadata sidecars — see app.py's
+                                       _outcome_shadow_save)
   - static/uploads/telemetry_logs/   (curated set self_heal.py retrains on)
+  - static/uploads/cases/            (outcome-tracking case records — case_store.py's
+                                       JSONFileCaseStore; same retention window applies
+                                       even though these are tiny JSON files, not photos)
 
 DRY-RUN BY DEFAULT — prints what it would delete without deleting anything.
 Pass --execute to actually delete. This is a deliberate safety default: a
@@ -31,9 +37,17 @@ DEFAULT_RETENTION_DAYS = 90
 TARGET_DIRS = [
     ROOT / "static" / "uploads" / "shadow_dataset",
     ROOT / "static" / "uploads" / "telemetry_logs",
+    ROOT / "static" / "uploads" / "cases",
 ]
 
-VALID_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".txt"}  # .txt = YOLO label sidecars
+# .txt = YOLO label sidecars; .json = outcome-tracking case records / outcome
+# metadata sidecars (case_store.py, app.py's _outcome_shadow_save)
+VALID_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".txt", ".json"}
+
+# Committed test fixtures (see .gitignore's comments next to these same
+# names) — never purge these regardless of age; they are not real farmer
+# data and adding .json to VALID_EXTS above must not put them at risk.
+_PROTECTED_FIXTURES = {"telemetry_placeholder.jpg", "cloud_integration_test.json", "cloud_integration_test_raw.jpg"}
 
 
 def find_old_files(directory: Path, cutoff_epoch: float):
@@ -41,7 +55,7 @@ def find_old_files(directory: Path, cutoff_epoch: float):
         return []
     old = []
     for f in directory.glob("**/*"):
-        if not f.is_file() or f.name == ".gitkeep":
+        if not f.is_file() or f.name == ".gitkeep" or f.name in _PROTECTED_FIXTURES:
             continue
         if f.suffix.lower() not in VALID_EXTS:
             continue

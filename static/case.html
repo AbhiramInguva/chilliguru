@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ChilliGuru — Crop Check-in</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/style.css">
+<style>
+  /* Minimal standalone layout — this page is reached directly from a saved
+     link, not through the main chat SPA, so it doesn't load app.js/the
+     header/sidebar chrome. Reuses style.css's color variables/fonts only. */
+  body { font-family: 'DM Sans', sans-serif; background: var(--surface-tint); margin: 0; }
+  .case-wrap {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 32px 20px 60px;
+  }
+  .case-logo { text-align: center; font-size: 40px; margin-bottom: 8px; }
+  .case-card {
+    background: var(--surface);
+    border-radius: 18px;
+    box-shadow: var(--shadow-card);
+    padding: 24px;
+    margin-top: 16px;
+  }
+  .case-title { font-size: 18px; font-weight: 600; color: var(--ink-800); margin-bottom: 6px; }
+  .case-sub { font-size: 13px; color: var(--ink-400); margin-bottom: 18px; }
+  .outcome-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+  .outcome-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 18px 8px;
+    border-radius: 14px;
+    border: 1px solid var(--ink-100);
+    background: var(--surface);
+    font-size: 14px;
+    font-family: 'DM Sans', sans-serif;
+    color: var(--ink-600);
+    cursor: pointer;
+    transition: all 0.18s ease;
+  }
+  .outcome-btn .icon { font-size: 26px; }
+  .outcome-btn:hover { background: var(--e-25); border-color: var(--e-200); color: var(--e-800); }
+  .outcome-btn.selected { background: var(--e-100); border-color: var(--e-400); color: var(--e-900); }
+  .upload-row { margin-bottom: 18px; }
+  .upload-label {
+    display: inline-block;
+    padding: 10px 16px;
+    border-radius: 10px;
+    border: 1px dashed var(--ink-200);
+    color: var(--ink-600);
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #photoInput { display: none; }
+  .submit-btn {
+    width: 100%;
+    padding: 13px;
+    border-radius: 12px;
+    border: none;
+    background: var(--e-700);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+    font-family: 'DM Sans', sans-serif;
+    cursor: pointer;
+  }
+  .submit-btn:disabled { opacity: 0.5; cursor: default; }
+  .escalation-note {
+    margin-top: 16px;
+    padding: 14px;
+    border-radius: 12px;
+    background: var(--e-25);
+    border: 1px solid var(--e-200);
+    color: var(--e-900);
+    font-size: 13.5px;
+    line-height: 1.6;
+  }
+  .thanks-note {
+    margin-top: 16px;
+    text-align: center;
+    color: var(--e-800);
+    font-weight: 500;
+  }
+  .not-found {
+    text-align: center;
+    color: var(--ink-400);
+    padding: 30px 10px;
+  }
+</style>
+</head>
+<body>
+  <div class="case-wrap">
+    <div class="case-logo">🌶️</div>
+    <div id="caseRoot" class="case-card">Loading…</div>
+  </div>
+  <script src="/static/js/case.js"></script>
+</body>
+</html>

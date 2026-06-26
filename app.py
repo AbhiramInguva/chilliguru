@@ -25,6 +25,8 @@ from flask_limiter.util import get_remote_address
 from gradio_client import Client, handle_file
 from groq import Groq
 import detector
+import triage
+import case_store
 
 # ── Optional error tracking (Sentry) ──────────────────────────────────────────
 # Entirely no-op unless the SENTRY_DSN env var is set — local dev and any
@@ -670,6 +672,9 @@ SHADOW_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "static", "uploads", "shadow_dataset")
 os.makedirs(SHADOW_DIR, exist_ok=True)
 
+# ── Outcome-tracking case store (see case_store.py for the durability warning) ─
+CASE_STORE = case_store.build_case_store()
+
 limiter = Limiter(
     get_remote_address,
     app=app,
@@ -1031,14 +1036,17 @@ def _get_chemical_disclaimer(lang: str) -> str:
     return _CHEMICAL_DISCLAIMER_TEXT.get(lang, _CHEMICAL_DISCLAIMER_TEXT["en"])
 
 
-def _groq_stream_generator(messages, detection, is_low, lang="en"):
+def _groq_stream_generator(messages, detection, is_low, lang="en", case_id=None):
     """
     SSE generator for the /detect streaming response.
 
     Event frames (each separated by a blank line, prefixed with 'data: '):
-      {"type": "meta",  "detection": {...}|null, "low_confidence": bool}
+      {"type": "meta",  "detection": {...}|null, "low_confidence": bool, "case_id": str|null}
           — First frame. Carries the detection-card data so the frontend can
-            render the card before any text arrives.
+            render the card before any text arrives. case_id (when present)
+            is the just-created outcome-tracking case for this diagnosis --
+            see _create_case; null means tracking was unavailable this
+            request and the frontend should simply not show the save-case UI.
       {"type": "text",  "text": "<chunk>"}
           — One frame per Groq delta token.
       {"type": "done"}
@@ -1047,7 +1055,7 @@ def _groq_stream_generator(messages, detection, is_low, lang="en"):
           — Mid-stream Groq error; client renders it inside the active bubble.
     """
     # ── Frame 0: metadata ─────────────────────────────────────────────────────
-    meta = {"type": "meta", "detection": detection, "low_confidence": is_low}
+    meta = {"type": "meta", "detection": detection, "low_confidence": is_low, "case_id": case_id}
     yield f"data: {json.dumps(meta, ensure_ascii=False)}\n\n"
 
     # ── Frames 1-N: Groq token stream ─────────────────────────────────────────
@@ -1132,6 +1140,132 @@ def _trigger_shadow_save(image_bytes: bytes, label: str,
                          confidence, trigger: str) -> None:
     """Submit _shadow_save to the global thread-pool instead of spawning a new daemon thread."""
     _shadow_executor.submit(_shadow_save, image_bytes, label, confidence, trigger)
+
+
+# ── Outcome-tracking: case creation + outcome-tagged shadow save ─────────────
+# A "case" is the small record created at the end of every diagnosis so a
+# farmer can return later and report whether the treatment worked. See
+# case_store.py for the storage interface + its ephemeral-disk production
+# warning. Every function here is best-effort: a storage failure must never
+# block, slow, or fail the diagnosis response that's already in flight.
+
+def _create_case(domain: str, leader: str, lang: str) -> str | None:
+    """
+    Creates a case record for a just-completed diagnosis (pest/disease card
+    or a triage-resolved deficiency). Returns the new case_id, or None if
+    case-tracking is unavailable (no durable store configured, disk error,
+    etc.) -- callers must treat None as "skip showing the save-this-case UI
+    this time," never as an error to surface to the farmer.
+    """
+    try:
+        if domain == "pest":
+            entry = _get_kb_entry(leader)
+            english, telugu_name, kind = detector._get_friendly_name(leader)
+            display_name = f"{english} ({telugu_name})" if telugu_name else english
+        else:
+            entry = _CHILLI_KB.get("deficiencies", {}).get(leader, {})
+            display_name = (entry or {}).get("display_name", leader)
+            kind = "deficiency"
+
+        treatment_summary = ""
+        if entry and (entry.get("management") or {}).get("organic"):
+            treatment_summary = entry["management"]["organic"][:280]
+
+        for _ in range(3):  # retry on the (very unlikely) case_id collision
+            candidate = case_store.generate_case_id()
+            case = {
+                "case_id":           candidate,
+                "created_at":        time.time(),
+                "domain":            domain,
+                "leader":            leader,
+                "kind":              kind,
+                "display_name":      display_name,
+                "treatment_summary": treatment_summary,
+                "lang":              lang,
+                "outcome":           None,
+                "outcome_at":        None,
+            }
+            if CASE_STORE.create(case):
+                return candidate
+        log.warning("case_create_failed", extra={"data": {"domain": domain, "leader": leader}})
+        return None
+    except Exception as exc:
+        log.warning("case_create_error", extra={"data": {"error": str(exc)}}, exc_info=True)
+        return None
+
+
+def _build_escalation_note(domain: str, leader: str, lang: str) -> str:
+    """
+    Plain-language nudge shown when a farmer reports the treatment isn't
+    working ('Worse'/'Same'). Pest/disease cases point at the existing
+    confirm-with-a-local-expert chemical framing; deficiency cases point at
+    a soil test -- both reuse language already established elsewhere in the
+    app rather than inventing new guidance.
+    """
+    if domain == "deficiency":
+        notes = {
+            "en": "This doesn't seem to be improving. Please get a soil test before adding any more fertiliser, and bring this result to your local Krishi Vigyan Kendra (KVK) or agriculture officer.",
+            "te": "ఇది మెరుగుపడుతున్నట్లు లేదు. మరింత ఎరువు వేయడానికి ముందు మట్టి పరీక్ష చేయించండి, ఈ ఫలితాన్ని మీ స్థానిక కృషి విజ్ఞాన కేంద్రం (KVK) లేదా వ్యవసాయ అధికారికి చూపించండి.",
+            "hi": "ऐसा लग रहा है कि सुधार नहीं हो रहा है। और खाद डालने से पहले मिट्टी की जांच करवाएं, और यह परिणाम अपने नज़दीकी कृषि विज्ञान केंद्र (KVK) या कृषि अधिकारी को दिखाएं।",
+        }
+    else:
+        notes = {
+            "en": "This doesn't seem to be improving with organic treatment. You may want to ask about a targeted chemical option -- please confirm the product and dose with your local Krishi Vigyan Kendra (KVK) or agriculture officer before using it.",
+            "te": "సేంద్రీయ చికిత్సతో ఇది మెరుగుపడుతున్నట్లు లేదు. మీరు ఒక నిర్దిష్ట రసాయన ఎంపిక గురించి అడగవచ్చు -- ఉత్పత్తి మరియు మోతాదును ఉపయోగించే ముందు మీ స్థానిక కృషి విజ్ఞాన కేంద్రం (KVK) లేదా వ్యవసాయ అధికారితో నిర్ధారించుకోండి.",
+            "hi": "जैविक उपचार से सुधार होता नहीं दिख रहा। आप एक लक्षित रासायनिक विकल्प के बारे में पूछ सकते हैं -- उपयोग से पहले उत्पाद और मात्रा की पुष्टि अपने नज़दीकी कृषि विज्ञान केंद्र (KVK) या कृषि अधिकारी से करें।",
+        }
+    return notes.get(lang) or notes["en"]
+
+
+def _outcome_shadow_save(image_bytes: bytes, case: dict, outcome: str) -> None:
+    """
+    Saves a follow-up photo into the SAME shadow-dataset directory the
+    existing low-confidence/triage capture paths already use, but with a
+    JSON sidecar carrying the rich, LABELLED metadata that makes this
+    different from a plain capture: the original diagnosis, the treatment
+    given, days elapsed, and the farmer-reported real-world outcome. This is
+    the data the self-heal pipeline (self_heal.py) can later be pointed at
+    once a human curates a batch of these into telemetry_logs/ -- mirrors
+    the existing image+.txt sidecar convention there, just with .json
+    instead of YOLO labels since this is outcome metadata, not a bounding box.
+    Does NOT trigger retraining itself -- capture/tag only, per design.
+    """
+    def _save():
+        try:
+            ts       = time.strftime("%Y%m%d_%H%M%S")
+            slug     = re.sub(r"[^a-z0-9]+", "_", str(case.get("leader", "unknown")).lower()).strip("_") or "unknown"
+            uid      = uuid.uuid4().hex[:6]
+            basename = f"outcome_{outcome}_{slug}_{ts}_{uid}"
+            img_path = os.path.join(SHADOW_DIR, f"{basename}.jpg")
+            json_path = os.path.join(SHADOW_DIR, f"{basename}.json")
+
+            with open(img_path, "wb") as fh:
+                fh.write(image_bytes)
+
+            created_at = case.get("created_at")
+            days_elapsed = round((time.time() - created_at) / 86400, 2) if created_at else None
+            metadata = {
+                "case_id":           case.get("case_id"),
+                "domain":            case.get("domain"),
+                "diagnosis_label":   case.get("leader"),
+                "diagnosis_display": case.get("display_name"),
+                "treatment_summary": case.get("treatment_summary"),
+                "diagnosed_at":      created_at,
+                "outcome":           outcome,
+                "outcome_at":        time.time(),
+                "days_elapsed":      days_elapsed,
+                "lang":              case.get("lang"),
+            }
+            with open(json_path, "w", encoding="utf-8") as fh:
+                json.dump(metadata, fh, ensure_ascii=False, indent=2)
+
+            log.info("outcome_shadow_save_ok", extra={"data": {
+                "case_id": case.get("case_id"), "outcome": outcome, "days_elapsed": days_elapsed,
+            }})
+        except Exception as exc:
+            log.warning("outcome_shadow_save_fail", extra={"data": {"error": str(exc)}})
+
+    _shadow_executor.submit(_save)
 
 
 SYSTEM_PROMPT = """IMPORTANT: Always respond in English unless the farmer writes in Telugu, Hindi, or Tamil first. Default language is English.
@@ -1539,6 +1673,223 @@ def detect():
         return jsonify({"success": False, "error": "Internal Processing Error", "request_id": _current_request_id()}), 500
 
 
+@app.route("/detect/triage-answer", methods=["POST"])
+@limiter.limit("20 per minute")
+def detect_triage_answer():
+    """
+    Handles one turn of the adaptive triage Q&A loop started by /detect's
+    {"triage": {...}} response (see _triage_ask_payload). Applies the
+    farmer's answer to re-rank the candidate scores, then either asks the
+    next curated question (JSON, same shape as /detect's triage payload) or
+    streams the final resolved card via SSE (same shape as /detect's normal
+    response) once a candidate is clearly ahead or the question budget
+    (knowledge/triage_rules.json's max_questions) is exhausted.
+
+    JSON Request Body:
+        state (dict): The opaque triage state echoed back from the previous
+            /detect or /detect/triage-answer response (domain, candidates,
+            asked, lang, user_msg, morphology).
+        question_id (str): The id of the question being answered (matches state).
+        answer_key (str): The option key the farmer picked.
+        history (list, optional): Conversation history for the final Groq call.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        state = data.get("state") if isinstance(data.get("state"), dict) else {}
+        answer_key = str(data.get("answer_key", "")).strip()
+        history = data.get("history") if isinstance(data.get("history"), list) else []
+
+        domain = state.get("domain")
+        lang = state.get("lang") if state.get("lang") in _SUPPORTED_LANGS else "en"
+        user_msg = str(state.get("user_msg") or "")
+        morphology = state.get("morphology") if isinstance(state.get("morphology"), dict) else None
+        asked = [a for a in (state.get("asked") or []) if isinstance(a, str)]
+
+        if domain not in ("pest", "deficiency"):
+            return jsonify({"error": "Invalid or expired triage state"}), 400
+
+        # Defensive: only accept known candidate ids with numeric scores —
+        # rejects a tampered/malformed state instead of trusting client input.
+        valid_ids = triage.PEST_CANDIDATE_IDS if domain == "pest" else triage.DEFICIENCY_CANDIDATE_IDS
+        raw_candidates = state.get("candidates") if isinstance(state.get("candidates"), dict) else {}
+        candidates = {
+            k: float(v) for k, v in raw_candidates.items()
+            if k in valid_ids and isinstance(v, (int, float))
+        }
+        if not candidates:
+            return jsonify({"error": "Invalid or expired triage state"}), 400
+
+        question_id = data.get("question_id") or (asked[-1] if asked else None)
+        rules = triage.load_rules()
+        pool = rules["pest_questions"] if domain == "pest" else rules["deficiency_questions"]
+        question = next((q for q in pool if q["id"] == question_id), None)
+
+        if question is not None and answer_key:
+            candidates = triage.apply_answer(question, answer_key, candidates)
+            if question_id not in asked:
+                asked.append(question_id)
+
+        resolution = triage.check_resolution(domain, candidates, len(asked))
+
+        if not resolution["resolved"]:
+            ask = _triage_ask_payload(domain, candidates, asked, lang, user_msg, morphology=morphology)
+            if ask is not None:
+                return jsonify(ask)
+            # Rulebook has no further question for this candidate set —
+            # resolve now with whoever currently leads (ambiguous fallback).
+            resolution = {"resolved": True, "leader": resolution["leader"], "ambiguous": True}
+
+        log.info("triage_resolved", extra={"data": {
+            "domain": domain, "leader": resolution["leader"],
+            "ambiguous": resolution["ambiguous"], "questions_asked": len(asked),
+        }})
+        return _triage_resolved_response(
+            domain, resolution["leader"], resolution["ambiguous"], lang, user_msg, history, morphology=morphology
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error("triage_answer_error", extra={"data": {"error_message": str(e)}}, exc_info=True)
+        return jsonify({"error": "Internal Processing Error", "request_id": _current_request_id()}), 500
+
+
+# ── Outcome-tracking: case recovery + follow-up (see case_store.py) ─────────
+_VALID_OUTCOMES = frozenset(["better", "same", "worse", "not_sure"])
+
+# Plain-language follow-up screen strings. kn/ta intentionally left as TODO
+# (fallback to English), matching the established pattern in static/js/app.js's
+# ADVICE_DISCLAIMER_TEXT / PRIVACY_NOTICE_TEXT and knowledge/triage_rules.json.
+CASE_PAGE_TEXT = {
+    "title": {
+        "en": "How is your crop now?", "te": "ఇప్పుడు మీ పంట ఎలా ఉంది?",
+        "hi": "अब आपकी फसल कैसी है?", "kn": None, "ta": None,
+    },
+    "options": {
+        "better":   {"en": "Better",   "te": "మెరుగైంది",  "hi": "बेहतर है",   "kn": None, "ta": None},
+        "same":     {"en": "Same",     "te": "అలాగే ఉంది", "hi": "वैसी ही है", "kn": None, "ta": None},
+        "worse":    {"en": "Worse",    "te": "అధ్వాన్నంగా ఉంది", "hi": "बिगड़ गई है", "kn": None, "ta": None},
+        "not_sure": {"en": "Not sure", "te": "తెలియదు",    "hi": "पता नहीं",   "kn": None, "ta": None},
+    },
+    "upload_prompt": {
+        "en": "Optional: add a new photo", "te": "ఐచ్ఛికం: కొత్త ఫోటో జతచేయండి",
+        "hi": "वैकल्पिक: नई फोटो जोड़ें", "kn": None, "ta": None,
+    },
+    "submit": {
+        "en": "Send", "te": "పంపండి", "hi": "भेजें", "kn": None, "ta": None,
+    },
+    "thanks": {
+        "en": "Thank you! This helps us and other farmers.", "te": "ధన్యవాదాలు! ఇది మీకు మరియు ఇతర రైతులకు సహాయపడుతుంది.",
+        "hi": "धन्यवाद! इससे आपकी और अन्य किसानों की मदद होती है।", "kn": None, "ta": None,
+    },
+    "not_found": {
+        "en": "We couldn't find this case. It may have expired.",
+        "te": "ఈ కేసు కనుగొనబడలేదు. ఇది గడువు ముగిసి ఉండవచ్చు.",
+        "hi": "यह केस नहीं मिला। यह समय सीमा समाप्त हो सकता है।", "kn": None, "ta": None,
+    },
+}
+
+
+@app.route("/case/<case_id>", methods=["GET"])
+def case_page(case_id):
+    """
+    Serves the standalone follow-up/recovery screen. The page itself is a
+    small static HTML+JS file (static/case.html) -- it reads the case_id out
+    of the URL client-side and calls the JSON APIs below. Kept as its own
+    page rather than folded into the main chat SPA so a farmer can open the
+    saved link directly (e.g. from a messaging app) without needing the rest
+    of the app's state.
+    """
+    return send_from_directory("static", "case.html")
+
+
+@app.route("/api/case/<case_id>", methods=["GET"])
+def api_case_get(case_id):
+    """Returns the saved case record (diagnosis + treatment summary) for the follow-up screen."""
+    case = CASE_STORE.get(case_id)
+    if case is None:
+        return jsonify({"found": False, "text": CASE_PAGE_TEXT}), 404
+    # Strip nothing personal is stored to begin with, but only return the
+    # fields the follow-up screen actually needs.
+    return jsonify({
+        "found": True,
+        "case": {
+            "case_id":           case.get("case_id"),
+            "domain":            case.get("domain"),
+            "display_name":      case.get("display_name"),
+            "treatment_summary": case.get("treatment_summary"),
+            "lang":              case.get("lang", "en"),
+            "created_at":        case.get("created_at"),
+            "outcome":           case.get("outcome"),
+        },
+        "text": CASE_PAGE_TEXT,
+    })
+
+
+@app.route("/api/case/<case_id>/outcome", methods=["POST"])
+@limiter.limit("10 per minute")
+def api_case_outcome(case_id):
+    """
+    Records the farmer's reported outcome for a case, and — the flywheel
+    part — if a follow-up photo is attached, saves it into the existing
+    shadow dataset tagged with the original diagnosis/treatment/outcome (see
+    _outcome_shadow_save). If the outcome is 'worse' or 'same', returns an
+    escalation note (existing chemical-confirm-with-expert framing for
+    pests, soil-test framing for deficiencies) for the page to display.
+
+    Best-effort throughout: a storage failure here must never 500 in a way
+    that looks broken to the farmer -- it degrades to "thanks, recorded"
+    even if the underlying write silently failed, since there is nothing
+    actionable the farmer can do about a server-side storage problem.
+    """
+    try:
+        outcome = (request.form.get("outcome") or "").strip().lower()
+        if outcome not in _VALID_OUTCOMES:
+            return jsonify({"error": "Invalid outcome"}), 400
+
+        case = CASE_STORE.get(case_id)
+        if case is None:
+            return jsonify({"error": "Case not found", "text": CASE_PAGE_TEXT}), 404
+
+        CASE_STORE.update(case_id, outcome=outcome, outcome_at=time.time())
+
+        image_file = request.files.get("image")
+        if image_file:
+            image_file.seek(0, 2)
+            file_size = image_file.tell()
+            image_file.seek(0)
+            if file_size <= MAX_IMAGE_BYTES:
+                header = image_file.read(12)
+                image_file.seek(0)
+                is_webp = header[:4] == b'RIFF' and header[8:12] == b'WEBP'
+                is_known = is_webp or any(header.startswith(sig) for sig in _IMAGE_SIGNATURES if sig != b'RIFF')
+                if is_known:
+                    image_bytes = image_file.read()
+                    if image_bytes:
+                        _outcome_shadow_save(image_bytes, case, outcome)
+            else:
+                log.warning("case_outcome_photo_too_large", extra={"data": {"size_bytes": file_size}})
+
+        lang = case.get("lang", "en")
+        escalate = outcome in ("worse", "same")
+        escalation_note = _build_escalation_note(case.get("domain", "pest"), case.get("leader", ""), lang) if escalate else None
+
+        log.info("case_outcome_recorded", extra={"data": {
+            "case_id": case_id, "outcome": outcome, "had_photo": bool(image_file), "escalate": escalate,
+        }})
+        return jsonify({
+            "recorded": True,
+            "escalate": escalate,
+            "escalation_note": escalation_note,
+            "text": CASE_PAGE_TEXT,
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error("case_outcome_error", extra={"data": {"error_message": str(e)}}, exc_info=True)
+        # Fail soft -- the farmer's report itself is low-stakes; never show a scary 500 for this.
+        return jsonify({"recorded": False, "error": "Could not record outcome right now", "text": CASE_PAGE_TEXT}), 200
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Decoupled sub-functions extracted from _detect_inner()
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1825,6 +2176,160 @@ def _compile_groq_payload(
         )
 
 
+# ── Vision-guided adaptive triage ─────────────────────────────────────────────
+# The vision step forms a hypothesis; when it's a single high-confidence
+# pest/disease, nothing below runs and the existing rich diagnosis flow above
+# is used unchanged. Otherwise (low-confidence / lookalike cluster, or a
+# healthy-looking/no-detection result the farmer says has a problem) the
+# functions below ask ONE targeted question at a time (knowledge/triage_rules.json,
+# via triage.py) and re-rank candidates on each answer, instead of the rich
+# multi-section format. See _compile_triage_card_prompt for the simplified
+# 3-part card (Type/Name, Cause, What To Do) used once triage resolves.
+_TRIAGE_CARD_SYSTEM_PROMPT = """You are ChilliGuru, a friendly farming assistant for chilli farmers in Andhra Pradesh and Telangana. Talk like a trusted friend -- simple, warm, easy to understand, no big words.
+
+The farmer has already answered a few quick follow-up questions and the diagnosis is now narrowed down. Your ONLY job is to present the result as a short, simple 3-part card -- nothing else, no extra sections, no long essays, no cost tables.
+
+ORGANIC ONLY by default. If a chemical is worth mentioning, frame it as something to confirm with a local Krishi Vigyan Kendra (KVK) or agriculture officer before use -- never a direct ready-to-apply prescription.
+"""
+
+
+def _compile_triage_card_prompt(domain: str, leader: str, ambiguous: bool, lang: str, user_msg: str) -> str:
+    """
+    Builds the Groq user-context string for a TRIAGE-RESOLVED result (after
+    the adaptive Q&A loop finishes) -- always exactly three short sections
+    (Type/Name, Cause, What To Do). For domain="deficiency" this is the ONLY
+    place a specific deficiency name is ever introduced into the conversation
+    -- it is reached purely via seed_deficiency_candidates() + question
+    answers in triage.py, never from the vision result, and always carries
+    the soil-test confirmation line (hard rule).
+    """
+    lang_names = {"en": "English", "hi": "Hindi", "te": "Telugu", "kn": "Kannada", "ta": "Tamil"}
+    target_lang_name = lang_names.get(lang, "English")
+    user_msg_clean = strip_cross_contamination(user_msg, lang)
+
+    uncertainty_note = (
+        "The farmer's answers narrowed this down but didn't give one single clear winner -- "
+        "present this as your BEST GUESS, not a certain diagnosis, and say so plainly. "
+    ) if ambiguous else ""
+
+    if domain == "pest":
+        english, telugu_name, kind = detector._get_friendly_name(leader)
+        label = f"{english} [{telugu_name}]" if telugu_name else english
+        kb_note = _format_kb_context(leader)
+        return (
+            f"=== ADAPTIVE TRIAGE RESULT (resolved via follow-up questions) ===\n"
+            f"Most likely {kind}: {label}\n"
+            f"{kb_note}"
+            f"Farmer described: '{user_msg_clean}'\n"
+            f"INSTRUCTION: {uncertainty_note}"
+            f"Reply in {target_lang_name} with EXACTLY three short sections, simple language, no extra sections:\n"
+            f"### Type/Name\n[name the {kind} simply]\n"
+            f"### Cause\n[1-2 sentences on what causes/spreads it]\n"
+            f"### What To Do\n[2-3 short organic-first steps; if a chemical is worth naming, frame it as "
+            f"'confirm with your local Krishi Vigyan Kendra (KVK) or agriculture officer before use', never a direct prescription]\n"
+            f"Keep the whole reply short -- this farmer already answered questions, they want the answer now, not a long essay."
+        )
+
+    # domain == "deficiency"
+    entry = _CHILLI_KB.get("deficiencies", {}).get(leader, {})
+    display_name = entry.get("display_name", leader)
+    telugu_name = entry.get("telugu_name", "")
+    symptoms = entry.get("key_symptoms", "")
+    mgmt = entry.get("management") or {}
+    mgmt_note = ""
+    if mgmt.get("organic"):
+        mgmt_note += f"Organic/biological management (reference): {mgmt['organic']}\n"
+    if mgmt.get("chemical"):
+        mgmt_note += (
+            "Chemical management (reference — confirm with KVK/agriculture officer before use, "
+            f"never a direct prescription): {mgmt['chemical']}\n"
+        )
+    return (
+        f"=== ADAPTIVE TRIAGE RESULT — NUTRIENT DEFICIENCY (resolved via follow-up questions, "
+        f"NOT from the photo — vision cannot see deficiencies) ===\n"
+        f"Most likely deficiency: {display_name} [{telugu_name}]\n"
+        f"Reference symptoms: {symptoms}\n"
+        f"{mgmt_note}"
+        f"Farmer described: '{user_msg_clean}'\n"
+        f"INSTRUCTION: {uncertainty_note}"
+        f"Reply in {target_lang_name} with EXACTLY three short sections, simple language, no extra sections:\n"
+        f"### Type/Name\n[name the deficiency simply]\n"
+        f"### Cause\n[1-2 sentences on what causes this deficiency, e.g. soil pH/drainage/nutrient imbalance]\n"
+        f"### What To Do\n[2-3 short organic-first corrective steps; if a chemical fertiliser/correction is worth naming, "
+        f"frame it as 'confirm with your local Krishi Vigyan Kendra (KVK) or agriculture officer before use']\n"
+        f"You MUST end with this exact reminder, translated naturally into {target_lang_name}: "
+        f"'This is a guess based on your answers, not a lab result — please confirm with a soil test before correcting "
+        f"the soil, especially before adding any chemical fertiliser.'\n"
+        f"Keep the whole reply short."
+    )
+
+
+def _triage_ask_payload(domain: str, candidates: dict, asked: list, lang: str, user_msg: str,
+                         morphology: dict | None = None):
+    """
+    Returns a JSON-serializable {"triage": {...}} payload carrying the next
+    question to ask, or None if no curated question in knowledge/triage_rules.json
+    applies to the current candidate set (caller should then treat this as
+    resolved/ambiguous rather than asking a question the rulebook can't ground).
+    """
+    q = triage.pick_next_question(domain, candidates, asked)
+    if q is None:
+        return None
+    return {
+        "triage": {
+            "question_id": q["id"],
+            "question": q["question"].get(lang) or q["question"]["en"],
+            "options": [
+                {"key": o["key"], "label": o["label"].get(lang) or o["label"]["en"]}
+                for o in q["options"]
+            ],
+            "state": {
+                "domain": domain,
+                "candidates": candidates,
+                "asked": asked,
+                "lang": lang,
+                "user_msg": user_msg,
+                "morphology": morphology,
+            },
+        }
+    }
+
+
+def _triage_resolved_response(domain: str, leader: str, ambiguous: bool, lang: str,
+                               user_msg: str, history: list, morphology: dict | None = None):
+    """Builds the final SSE response once triage has resolved (or exhausted its question budget)."""
+    system_content = strip_cross_contamination(_TRIAGE_CARD_SYSTEM_PROMPT, lang)
+    system_content += _LANG_INSTRUCTION_MAP.get(lang, "\nIMPORTANT: You must respond in English.")
+    system_content = strip_cross_contamination(system_content, lang)
+    triage_context = _compile_triage_card_prompt(domain, leader, ambiguous, lang, user_msg)
+
+    messages = [{"role": "system", "content": system_content}] + history + [{"role": "user", "content": triage_context}]
+
+    detection = None
+    if domain == "pest":
+        english, telugu_name, kind = detector._get_friendly_name(leader)
+        detection = {
+            "label":      f"{english} [{telugu_name}]" if telugu_name else english,
+            "raw_label":  english,
+            "telugu":     telugu_name,
+            "type":       kind,
+            "confidence": 55 if ambiguous else 70,  # post-Q&A display value; the original vision % is no longer the relevant number
+        }
+        if morphology:
+            detection["morphology"] = morphology
+
+    case_id = _create_case(domain, leader, lang)
+
+    return Response(
+        stream_with_context(_groq_stream_generator(messages, detection, ambiguous, lang, case_id=case_id)),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control":     "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 def _detect_inner():
     """
     Internal execution method for the `/detect` route.
@@ -1928,6 +2433,18 @@ def _detect_inner():
                     "phase":       result.get("phase") if isinstance(result, dict) else None,
                 }})
                 if isinstance(result, dict) and (result.get("success") is False or result.get("phase") == 3):
+                    # Branch (c): vision found nothing confident -- before giving up,
+                    # check whether the farmer's own words/selections suggest a
+                    # nutrition problem worth a deficiency triage instead of a
+                    # flat error. Vision contributes ONLY this yes/no bias, never
+                    # a specific deficiency (see triage.seed_deficiency_candidates).
+                    if triage.looks_like_deficiency_trigger(result, user_msg, field_context):
+                        def_lang = _resolve_request_language(user_msg)
+                        def_candidates = triage.seed_deficiency_candidates()
+                        ask = _triage_ask_payload("deficiency", def_candidates, [], def_lang, user_msg)
+                        if ask is not None:
+                            log.info("triage_deficiency_start", extra={"data": {"trigger": "no_confident_detection"}})
+                            return jsonify(ask)
                     return jsonify(result)
             except Exception as local_exc:
                 log.error("local_cascade_error", extra={"data": {
@@ -1952,6 +2469,36 @@ def _detect_inner():
 
         # ── Sub-module 1: Resolve language (with early-return fast-path) ───────
         lang = _resolve_request_language(user_msg)
+
+        # ── Vision-guided adaptive triage branch ────────────────────────────
+        # (a) High-confidence single detection falls through untouched below —
+        #     this is the existing rich-format flow, unchanged (regression-safe).
+        # (b) Low-confidence / lookalike cluster -> ask the one curated question
+        #     that splits THESE candidates (knowledge/triage_rules.json), not a
+        #     generic list.
+        # (c) Healthy-looking/no-pest result but the farmer reports a problem ->
+        #     deficiency triage (vision only supplies the yes/no bias here, see
+        #     triage.looks_like_deficiency_trigger — never a specific deficiency).
+        if isinstance(result, dict) and triage.looks_like_deficiency_trigger(result, user_msg, field_context):
+            def_candidates = triage.seed_deficiency_candidates()
+            ask = _triage_ask_payload("deficiency", def_candidates, [], lang, user_msg)
+            if ask is not None:
+                if image_bytes:
+                    _trigger_shadow_save(image_bytes, label="deficiency_triage_trigger", confidence=0, trigger="triage_ask")
+                log.info("triage_deficiency_start", extra={"data": {"trigger": "healthy_but_problem_reported"}})
+                return jsonify(ask)
+
+        pest_candidates = triage.build_pest_candidates(result, to_core_class) if isinstance(result, dict) else {}
+        if len(pest_candidates) >= 2 and triage.is_lookalike_or_low(result, pest_candidates):
+            morphology = top.get("morphology") if isinstance(top, dict) else None
+            ask = _triage_ask_payload("pest", pest_candidates, [], lang, user_msg, morphology=morphology)
+            if ask is not None:
+                if image_bytes:
+                    label = top.get("raw_label") if isinstance(top, dict) else "unknown"
+                    confidence = top.get("confidence", 0) if isinstance(top, dict) else 0
+                    _trigger_shadow_save(image_bytes, label=label, confidence=confidence, trigger="triage_ask")
+                log.info("triage_pest_start", extra={"data": {"candidates": list(pest_candidates.keys())}})
+                return jsonify(ask)
 
         # ── Sub-module 3: Compile Groq payload ──────────────────────────────
         if top is not None:
@@ -1985,8 +2532,17 @@ def _detect_inner():
     system_content = strip_cross_contamination(system_content, lang)
 
     messages = [{"role": "system", "content": system_content}] + history + [{"role": "user", "content": groq_context}]
+
+    # Only create an outcome-tracking case when an actual image diagnosis
+    # happened (detection is None on the text-only chat-fallback path above).
+    case_id = None
+    if detection is not None:
+        core_cls = to_core_class(detection.get("raw_label") or detection.get("label"))
+        if core_cls:
+            case_id = _create_case("pest", core_cls, lang)
+
     return Response(
-        stream_with_context(_groq_stream_generator(messages, detection, is_low, lang)),
+        stream_with_context(_groq_stream_generator(messages, detection, is_low, lang, case_id=case_id)),
         mimetype="text/event-stream",
         headers={
             "Cache-Control":     "no-cache",

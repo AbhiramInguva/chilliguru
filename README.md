@@ -100,7 +100,11 @@ before being shown to the farmer or matched against the knowledge base.
 | `/health/deep` | GET | Active probe: actually calls the HF Space + Groq, returns `{status, hf:{...}, groq:{...}}` |
 | `/api/regional-risk?lat=&lon=` | GET | Weather-driven pest risk levels for 4 nearby points |
 | `/chat` | POST | `{message, history, lang}` → `{reply}` (JSON; rate-limited 15/min) |
-| `/detect` | POST (multipart) | `image`, `message`, `history`, `lang`, optional MCQ fields (`plant_age`, `observed`, `affected_part`, `curl_dir`) → Server-Sent Events stream (rate-limited 5/min) |
+| `/detect` | POST (multipart) | `image`, `message`, `history`, `lang`, optional MCQ fields (`plant_age`, `observed`, `affected_part`, `curl_dir`) → SSE stream, or `{triage:{...}}` JSON if the adaptive triage flow needs to ask a follow-up question first (rate-limited 5/min) |
+| `/detect/triage-answer` | POST (JSON) | One turn of the adaptive triage Q&A loop (`state`, `question_id`, `answer_key`, `history`) → next `{triage:{...}}` question or the resolved SSE stream (rate-limited 20/min) |
+| `/case/<case_id>` | GET | Serves the standalone outcome-tracking follow-up page (`static/case.html`) |
+| `/api/case/<case_id>` | GET | Returns the saved case record (diagnosis + treatment summary) for the follow-up page |
+| `/api/case/<case_id>/outcome` | POST (multipart) | `outcome` (`better`/`same`/`worse`/`not_sure`), optional `image` → records the outcome, tags any follow-up photo into the shadow dataset, and returns an escalation note if `worse`/`same` (rate-limited 10/min) |
 
 ## Environment variables
 
@@ -115,7 +119,8 @@ before being shown to the farmer or matched against the knowledge base.
 | `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` | Deploy only | Used by `deploy.sh`/`upload_to_hf.py` to push weights to the HF Space |
 | `KAGGLE_KERNEL` | Deploy only, optional | `owner/slug` to auto-download trained weights via the `kaggle` CLI in `deploy.sh` |
 | `SENTRY_DSN` | No, optional | If set, enables Sentry error tracking (`sentry-sdk[flask]`) for unhandled exceptions; if unset, Sentry is never initialized — no-op |
-| `RETENTION_DAYS` | No | Days to keep farmer photos in `static/uploads/shadow_dataset/` and `static/uploads/telemetry_logs/` before `scripts/purge_old_telemetry.py` deletes them; defaults to `90`. See [PRIVACY.md](PRIVACY.md) |
+| `RETENTION_DAYS` | No | Days to keep farmer photos in `static/uploads/shadow_dataset/`, `static/uploads/telemetry_logs/`, and outcome-tracking cases in `static/uploads/cases/` before `scripts/purge_old_telemetry.py` deletes them; defaults to `90`. See [PRIVACY.md](PRIVACY.md) |
+| `CASE_STORE_PATH` | No, **production-critical** | Directory the outcome-tracking case store (`case_store.py`) writes to; defaults to `static/uploads/cases/`. **On Render's free tier this default is on ephemeral disk and cases will NOT survive a restart/redeploy.** Point this at a mounted Render persistent disk (or replace `case_store.build_case_store()` with a DB-backed `CaseStore`) before relying on outcome tracking in production. See "Outcome tracking" below |
 
 **On Render, these are set in the dashboard's Environment tab — never commit a
 `.env` file.** Locally, `chilliguru.py` and `app.py` (via `python-dotenv`/your shell)
@@ -175,11 +180,15 @@ make status       # git status + check for stray *.pt files
 ```
 app.py                  Flask backend (routes, Groq orchestration, circuit breaker)
 detector.py              Local 3-phase ONNX fallback cascade
+triage.py                Vision-guided adaptive triage engine (question selection/re-rank)
+case_store.py            Outcome-tracking case storage interface (see "Outcome tracking" above)
 chilliguru.py            Standalone terminal CLI (Groq + detector.py, no Flask)
 knowledge/chilli_kb.json        Curated agronomy reference (deficiencies/pests/diseases)
 knowledge/kb_class_map.json     Maps the 15 vision-model classes to KB entries
+knowledge/triage_rules.json     Adaptive-triage question rulebook (sourced from chilli_kb.json)
 scripts/validate_kb.py          Validates the KB and class map are complete/consistent
-static/index.html, static/js/app.js, static/css/style.css   Served frontend
+static/index.html, static/js/app.js, static/css/style.css   Served frontend (main chat SPA)
+static/case.html, static/js/case.js   Standalone outcome-tracking follow-up page
 index.html               Standalone frontend variant (also fixed to call /chat,
                           not Groq directly — see Security note below)
 weights/*.onnx           Local fallback model weights (committed)
@@ -235,3 +244,41 @@ the advice disclaimer (confirm chemical dosages with a local KVK/agriculture
 officer before use) and the data notice; the same disclaimer is appended
 server-side to any `/chat` or `/detect` reply that mentions chemical
 treatment.
+
+## Outcome tracking (farmer-initiated, first version)
+
+After a diagnosis (a pest/disease card, or a triage-resolved deficiency —
+see "Vision-guided adaptive triage" — high-confidence detections included),
+the app creates a small "case" record (`app.py`'s `_create_case`) and shows
+the farmer a short code + recovery link (`/case/<case_id>`) they can save.
+There are no accounts, reminders, or SMS in this first version — the farmer
+has to come back and open the link themselves.
+
+- **Recovery screen** (`static/case.html` + `static/js/case.js`, served at
+  `/case/<case_id>`): "How is your crop now?" with four tappable
+  icon+text options (Better/Same/Worse/Not sure) and an optional follow-up
+  photo upload. Standalone page, no login, works from a saved link days
+  later on any device.
+- **The flywheel**: when an outcome (and optionally a follow-up photo)
+  comes in, the photo is saved into the *same* `static/uploads/shadow_dataset/`
+  directory the existing active-learning capture paths already use, but with
+  a `.json` sidecar (`app.py`'s `_outcome_shadow_save`) carrying the original
+  diagnosis, the treatment given, days elapsed, and the farmer-reported
+  outcome — i.e. real labelled diagnosis→treatment→outcome data, not just a
+  raw image. This does **not** trigger retraining by itself; a human still
+  curates a batch of these into `static/uploads/telemetry_logs/` before
+  `self_heal.py` runs, exactly as today.
+- **Escalation**: if the farmer reports "Worse" or "Same", the follow-up
+  screen shows a short escalation note — the existing
+  confirm-with-KVK/agriculture-officer chemical framing for pests/diseases,
+  or a soil-test recommendation for deficiencies (reusing language already
+  established elsewhere in the app, not new advice).
+- **Storage interface** (`case_store.py`): a `CaseStore` abstract interface
+  with a `JSONFileCaseStore` default (one small JSON file per case under
+  `CASE_STORE_PATH`, default `static/uploads/cases/`) for local dev. **This
+  is NOT durable on Render's free tier** — see the `CASE_STORE_PATH` row
+  above and the module docstring in `case_store.py`. Case creation/lookup is
+  best-effort everywhere it's called: if the store is unavailable for any
+  reason, `/detect` and `/detect/triage-answer` still return the full
+  diagnosis exactly as before, just without a case_id/save-this-case card —
+  the core diagnosis flow never blocks on or fails because of this feature.
