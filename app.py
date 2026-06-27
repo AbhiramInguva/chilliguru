@@ -1036,7 +1036,7 @@ def _get_chemical_disclaimer(lang: str) -> str:
     return _CHEMICAL_DISCLAIMER_TEXT.get(lang, _CHEMICAL_DISCLAIMER_TEXT["en"])
 
 
-def _groq_stream_generator(messages, detection, is_low, lang="en", case_id=None):
+def _groq_stream_generator(messages, detection, is_low, lang="en", case_id=None, kb_treatment_block=None):
     """
     SSE generator for the /detect streaming response.
 
@@ -1053,6 +1053,14 @@ def _groq_stream_generator(messages, detection, is_low, lang="en", case_id=None)
           — Clean end-of-stream signal.
       {"type": "error", "error": "<message>"}
           — Mid-stream Groq error; client renders it inside the active bubble.
+
+    kb_treatment_block (optional): pre-rendered treatment/dosage text built
+    directly from chilli_kb.json (see _build_kb_treatment_block) -- used
+    only by the triage-resolved path. When present it is appended as its
+    OWN text frame(s) AFTER the LLM's stream finishes, not passed through
+    Groq at all -- this is the hard-rule enforcement point ensuring
+    dosage/treatment content is always KB-verbatim, never LLM-generated.
+    The existing high-confidence path passes None here and is unaffected.
     """
     # ── Frame 0: metadata ─────────────────────────────────────────────────────
     meta = {"type": "meta", "detection": detection, "low_confidence": is_low, "case_id": case_id}
@@ -1078,6 +1086,10 @@ def _groq_stream_generator(messages, detection, is_low, lang="en", case_id=None)
                 full_text.append(delta)
                 payload = {"type": "text", "text": delta}
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        if kb_treatment_block:
+            full_text.append(kb_treatment_block)
+            yield f"data: {json.dumps({'type': 'text', 'text': kb_treatment_block}, ensure_ascii=False)}\n\n"
 
         if _mentions_chemical_treatment("".join(full_text)):
             disclaimer = _get_chemical_disclaimer(lang)
@@ -1680,15 +1692,16 @@ def detect_triage_answer():
     Handles one turn of the adaptive triage Q&A loop started by /detect's
     {"triage": {...}} response (see _triage_ask_payload). Applies the
     farmer's answer to re-rank the candidate scores, then either asks the
-    next curated question (JSON, same shape as /detect's triage payload) or
-    streams the final resolved card via SSE (same shape as /detect's normal
-    response) once a candidate is clearly ahead or the question budget
-    (knowledge/triage_rules.json's max_questions) is exhausted.
+    next question (JSON, same shape as /detect's triage payload -- Groq-
+    authored if available, falling back to knowledge/triage_rules.json) or,
+    once a candidate is clearly ahead or the question budget is exhausted,
+    asks Groq to make the authoritative resolution call
+    (_groq_resolve_diagnosis) and streams the final KB-governed card.
 
     JSON Request Body:
         state (dict): The opaque triage state echoed back from the previous
             /detect or /detect/triage-answer response (domain, candidates,
-            asked, lang, user_msg, morphology).
+            asked, lang, user_msg, morphology, last_question, qa_transcript).
         question_id (str): The id of the question being answered (matches state).
         answer_key (str): The option key the farmer picked.
         history (list, optional): Conversation history for the final Groq call.
@@ -1704,6 +1717,10 @@ def detect_triage_answer():
         user_msg = str(state.get("user_msg") or "")
         morphology = state.get("morphology") if isinstance(state.get("morphology"), dict) else None
         asked = [a for a in (state.get("asked") or []) if isinstance(a, str)]
+        qa_transcript = [
+            list(pair) for pair in (state.get("qa_transcript") or [])
+            if isinstance(pair, list) and len(pair) == 2
+        ]
 
         if domain not in ("pest", "deficiency"):
             return jsonify({"error": "Invalid or expired triage state"}), 400
@@ -1720,31 +1737,68 @@ def detect_triage_answer():
             return jsonify({"error": "Invalid or expired triage state"}), 400
 
         question_id = data.get("question_id") or (asked[-1] if asked else None)
-        rules = triage.load_rules()
-        pool = rules["pest_questions"] if domain == "pest" else rules["deficiency_questions"]
-        question = next((q for q in pool if q["id"] == question_id), None)
+        # Prefer the full question object stashed in state at ask-time (this is
+        # the ONLY place a Groq-authored "dyn_*" question can be found — it was
+        # never written to knowledge/triage_rules.json). Fall back to the
+        # static rulebook lookup for backward-compat / purely-static turns.
+        last_question = state.get("last_question") if isinstance(state.get("last_question"), dict) else None
+        if last_question and last_question.get("id") == question_id:
+            question = last_question
+        else:
+            rules = triage.load_rules()
+            pool = rules["pest_questions"] if domain == "pest" else rules["deficiency_questions"]
+            question = next((q for q in pool if q["id"] == question_id), None)
 
         if question is not None and answer_key:
             candidates = triage.apply_answer(question, answer_key, candidates)
             if question_id not in asked:
                 asked.append(question_id)
+            # Record this turn for _groq_resolve_diagnosis's transcript.
+            chosen_opt = next((o for o in question["options"] if o["key"] == answer_key), None)
+            q_text = question["question"].get(lang) or question["question"].get("en", "")
+            a_text = (chosen_opt["label"].get(lang) or chosen_opt["label"].get("en", "")) if chosen_opt else answer_key
+            qa_transcript.append([q_text, a_text])
 
         resolution = triage.check_resolution(domain, candidates, len(asked))
 
         if not resolution["resolved"]:
-            ask = _triage_ask_payload(domain, candidates, asked, lang, user_msg, morphology=morphology)
+            ask = _triage_ask_payload(domain, candidates, asked, lang, user_msg,
+                                       morphology=morphology, qa_transcript=qa_transcript)
             if ask is not None:
                 return jsonify(ask)
-            # Rulebook has no further question for this candidate set —
+            # Neither Groq nor the rulebook has a further question —
             # resolve now with whoever currently leads (ambiguous fallback).
             resolution = {"resolved": True, "leader": resolution["leader"], "ambiguous": True}
 
+        # ── Authoritative resolution: Groq picks from the candidate set, the
+        # deterministic score-leader is the fallback if Groq is unavailable
+        # or returns anything outside the candidate set. ────────────────────
+        groq_resolution = _groq_resolve_diagnosis(domain, candidates, qa_transcript, lang)
+        if groq_resolution is not None:
+            final_leader, final_ambiguous = groq_resolution["leader"], groq_resolution["ambiguous"]
+            resolved_via = "groq"
+        else:
+            final_leader, final_ambiguous = resolution["leader"], True
+            resolved_via = "deterministic_fallback"
+
+        # Hard safety net: the resolved candidate MUST have an actual
+        # chilli_kb.json entry (treatment/dosage content has nowhere else to
+        # come from). If not, try the next-best KB-mapped candidate by score;
+        # if none of the live candidates map to the KB at all, recommend a
+        # local expert rather than ever building a card with invented content.
+        if final_leader is None or not _kb_entry_exists(domain, final_leader):
+            kb_mapped = {k: v for k, v in candidates.items() if _kb_entry_exists(domain, k)}
+            if not kb_mapped:
+                log.info("triage_no_kb_match", extra={"data": {"domain": domain, "candidates": list(candidates.keys())}})
+                return _no_kb_match_response(lang)
+            final_leader, final_ambiguous = max(kb_mapped, key=kb_mapped.get), True
+
         log.info("triage_resolved", extra={"data": {
-            "domain": domain, "leader": resolution["leader"],
-            "ambiguous": resolution["ambiguous"], "questions_asked": len(asked),
+            "domain": domain, "leader": final_leader, "ambiguous": final_ambiguous,
+            "questions_asked": len(asked), "resolved_via": resolved_via,
         }})
         return _triage_resolved_response(
-            domain, resolution["leader"], resolution["ambiguous"], lang, user_msg, history, morphology=morphology
+            domain, final_leader, final_ambiguous, lang, user_msg, history, morphology=morphology
         )
     except HTTPException:
         raise
@@ -2181,27 +2235,45 @@ def _compile_groq_payload(
 # pest/disease, nothing below runs and the existing rich diagnosis flow above
 # is used unchanged. Otherwise (low-confidence / lookalike cluster, or a
 # healthy-looking/no-detection result the farmer says has a problem) the
-# functions below ask ONE targeted question at a time (knowledge/triage_rules.json,
-# via triage.py) and re-rank candidates on each answer, instead of the rich
-# multi-section format. See _compile_triage_card_prompt for the simplified
-# 3-part card (Type/Name, Cause, What To Do) used once triage resolves.
+# functions below ask ONE targeted question at a time and re-rank candidates
+# on each answer, instead of the rich multi-section format.
+#
+# STRICT SEPARATION (the safety core of this feature):
+#   - Groq's job is the CONVERSATION: authoring question text/options
+#     (_groq_generate_question) and reasoning over the farmer's answers to
+#     pick a candidate (_groq_resolve_diagnosis). It is given ONLY the
+#     key_symptoms text already in chilli_kb.json for the live candidate
+#     set and is explicitly told never to introduce a candidate or symptom
+#     outside that set.
+#   - The KB governs the FACTS: every id Groq returns (in a question's
+#     favors/against tags, or as the final resolved_id) is validated against
+#     the candidate set; anything outside it is rejected, not trusted. The
+#     final card's treatment/dosage text is built by _build_kb_treatment_block
+#     directly from chilli_kb.json and is NEVER passed through Groq at all --
+#     Groq only writes the Type/Name + Cause framing, never the treatment.
+#   - Graceful degradation: knowledge/triage_rules.json (via triage.py) is
+#     the FALLBACK question source if Groq is unavailable/times out/returns
+#     something invalid, so the feature degrades instead of breaking. The
+#     deterministic score-leader (triage.check_resolution) is likewise the
+#     fallback diagnosis if _groq_resolve_diagnosis is unavailable/rejected.
 _TRIAGE_CARD_SYSTEM_PROMPT = """You are ChilliGuru, a friendly farming assistant for chilli farmers in Andhra Pradesh and Telangana. Talk like a trusted friend -- simple, warm, easy to understand, no big words.
 
-The farmer has already answered a few quick follow-up questions and the diagnosis is now narrowed down. Your ONLY job is to present the result as a short, simple 3-part card -- nothing else, no extra sections, no long essays, no cost tables.
-
-ORGANIC ONLY by default. If a chemical is worth mentioning, frame it as something to confirm with a local Krishi Vigyan Kendra (KVK) or agriculture officer before use -- never a direct ready-to-apply prescription.
+The farmer has already answered a few quick follow-up questions and the diagnosis is now narrowed down. Your ONLY job is to write the Type/Name and Cause -- two short sections, nothing else. Do NOT write any treatment, dosage, or "what to do" advice; that is added separately from a verified reference, not by you.
 """
 
 
 def _compile_triage_card_prompt(domain: str, leader: str, ambiguous: bool, lang: str, user_msg: str) -> str:
     """
     Builds the Groq user-context string for a TRIAGE-RESOLVED result (after
-    the adaptive Q&A loop finishes) -- always exactly three short sections
-    (Type/Name, Cause, What To Do). For domain="deficiency" this is the ONLY
-    place a specific deficiency name is ever introduced into the conversation
-    -- it is reached purely via seed_deficiency_candidates() + question
-    answers in triage.py, never from the vision result, and always carries
-    the soil-test confirmation line (hard rule).
+    the adaptive Q&A loop finishes) -- Groq writes ONLY Type/Name + Cause
+    here. Treatment/dosage is deliberately NOT requested from Groq at all;
+    _build_kb_treatment_block renders that directly from chilli_kb.json and
+    is appended server-side (see _triage_resolved_response) so dosage
+    content can never be LLM-paraphrased. For domain="deficiency" this is
+    the ONLY place a specific deficiency name is ever introduced into the
+    conversation -- it is reached purely via seed_deficiency_candidates() +
+    question answers (static) or _groq_resolve_diagnosis (dynamic), never
+    from the vision result.
     """
     lang_names = {"en": "English", "hi": "Hindi", "te": "Telugu", "kn": "Kannada", "ta": "Tamil"}
     target_lang_name = lang_names.get(lang, "English")
@@ -2215,66 +2287,369 @@ def _compile_triage_card_prompt(domain: str, leader: str, ambiguous: bool, lang:
     if domain == "pest":
         english, telugu_name, kind = detector._get_friendly_name(leader)
         label = f"{english} [{telugu_name}]" if telugu_name else english
-        kb_note = _format_kb_context(leader)
+        entry = _get_kb_entry(leader) or {}
+        causal = entry.get("causal_agent") or "(not documented)"
+        symptoms = entry.get("key_symptoms") or "(not documented)"
         return (
             f"=== ADAPTIVE TRIAGE RESULT (resolved via follow-up questions) ===\n"
             f"Most likely {kind}: {label}\n"
-            f"{kb_note}"
+            f"Causal agent (reference -- do not contradict): {causal}\n"
+            f"Key symptoms (reference -- do not contradict): {symptoms}\n"
             f"Farmer described: '{user_msg_clean}'\n"
             f"INSTRUCTION: {uncertainty_note}"
-            f"Reply in {target_lang_name} with EXACTLY three short sections, simple language, no extra sections:\n"
+            f"Reply in {target_lang_name} with EXACTLY two short sections, simple language, no extra sections:\n"
             f"### Type/Name\n[name the {kind} simply]\n"
-            f"### Cause\n[1-2 sentences on what causes/spreads it]\n"
-            f"### What To Do\n[2-3 short organic-first steps; if a chemical is worth naming, frame it as "
-            f"'confirm with your local Krishi Vigyan Kendra (KVK) or agriculture officer before use', never a direct prescription]\n"
-            f"Keep the whole reply short -- this farmer already answered questions, they want the answer now, not a long essay."
+            f"### Cause\n[1-2 sentences on what causes/spreads it, grounded in the reference above]\n"
+            f"Do NOT write a treatment, dosage, or 'what to do' section -- that is added separately from a "
+            f"verified reference, not by you. Keep the whole reply short."
         )
 
     # domain == "deficiency"
     entry = _CHILLI_KB.get("deficiencies", {}).get(leader, {})
     display_name = entry.get("display_name", leader)
     telugu_name = entry.get("telugu_name", "")
-    symptoms = entry.get("key_symptoms", "")
-    mgmt = entry.get("management") or {}
-    mgmt_note = ""
-    if mgmt.get("organic"):
-        mgmt_note += f"Organic/biological management (reference): {mgmt['organic']}\n"
-    if mgmt.get("chemical"):
-        mgmt_note += (
-            "Chemical management (reference — confirm with KVK/agriculture officer before use, "
-            f"never a direct prescription): {mgmt['chemical']}\n"
-        )
+    symptoms = entry.get("key_symptoms") or "(not documented)"
     return (
         f"=== ADAPTIVE TRIAGE RESULT — NUTRIENT DEFICIENCY (resolved via follow-up questions, "
         f"NOT from the photo — vision cannot see deficiencies) ===\n"
         f"Most likely deficiency: {display_name} [{telugu_name}]\n"
-        f"Reference symptoms: {symptoms}\n"
-        f"{mgmt_note}"
+        f"Reference symptoms (do not contradict): {symptoms}\n"
         f"Farmer described: '{user_msg_clean}'\n"
         f"INSTRUCTION: {uncertainty_note}"
-        f"Reply in {target_lang_name} with EXACTLY three short sections, simple language, no extra sections:\n"
+        f"Reply in {target_lang_name} with EXACTLY two short sections, simple language, no extra sections:\n"
         f"### Type/Name\n[name the deficiency simply]\n"
-        f"### Cause\n[1-2 sentences on what causes this deficiency, e.g. soil pH/drainage/nutrient imbalance]\n"
-        f"### What To Do\n[2-3 short organic-first corrective steps; if a chemical fertiliser/correction is worth naming, "
-        f"frame it as 'confirm with your local Krishi Vigyan Kendra (KVK) or agriculture officer before use']\n"
-        f"You MUST end with this exact reminder, translated naturally into {target_lang_name}: "
-        f"'This is a guess based on your answers, not a lab result — please confirm with a soil test before correcting "
-        f"the soil, especially before adding any chemical fertiliser.'\n"
-        f"Keep the whole reply short."
+        f"### Cause\n[1-2 sentences on what causes this deficiency, grounded in the reference above]\n"
+        f"Do NOT write a correction, dosage, or soil-test section -- that is added separately from a verified "
+        f"reference, not by you. Keep the whole reply short."
     )
 
 
+# ── KB-verbatim treatment block (NEVER passed through Groq) ──────────────────
+_TREATMENT_BLOCK_TEXT = {
+    "organic_heading": {
+        "en": "**Organic / Biological**", "te": "**సేంద్రియ / జీవ నియంత్రణ**",
+        "hi": "**जैविक उपचार**", "kn": None, "ta": None,
+    },
+    "chemical_heading": {
+        "en": "**Chemical** (confirm the product and dose with your local Krishi Vigyan Kendra (KVK) or agriculture officer before use)",
+        "te": "**రసాయనం** (వాడే ముందు ఉత్పత్తి మరియు మోతాదును మీ స్థానిక కృషి విజ్ఞాన కేంద్రం (KVK) లేదా వ్యవసాయ అధికారితో నిర్ధారించుకోండి)",
+        "hi": "**रासायनिक** (उपयोग से पहले उत्पाद और मात्रा की पुष्टि अपने नज़दीकी कृषि विज्ञान केंद्र (KVK) या कृषि अधिकारी से करें)",
+        "kn": None, "ta": None,
+    },
+    "no_data": {
+        "en": "No verified organic or chemical treatment is recorded for this in our reference yet -- please show this to your local Krishi Vigyan Kendra (KVK) or agriculture officer for treatment advice.",
+        "te": "దీనికి సంబంధించిన సేంద్రియ లేదా రసాయన చికిత్స మా రెఫరెన్స్‌లో ఇంకా నమోదు చేయబడలేదు -- చికిత్స సలహా కోసం దీన్ని మీ స్థానిక కృషి విజ్ఞాన కేంద్రం (KVK) లేదా వ్యవసాయ అధికారికి చూపించండి.",
+        "hi": "इसके लिए कोई सत्यापित जैविक या रासायनिक उपचार अभी हमारे संदर्भ में दर्ज नहीं है -- उपचार सलाह के लिए इसे अपने नज़दीकी कृषि विज्ञान केंद्र (KVK) या कृषि अधिकारी को दिखाएं।",
+        "kn": None, "ta": None,
+    },
+}
+
+_SOIL_TEST_REMINDER = {
+    "en": "This is a guess based on your answers, not a lab result -- please confirm with a soil test before correcting the soil, especially before adding any chemical fertiliser.",
+    "te": "ఇది మీ సమాధానాల ఆధారంగా అంచనా మాత్రమే, ప్రయోగశాల ఫలితం కాదు -- మట్టిని సరిచేసే ముందు, ముఖ్యంగా ఏదైనా రసాయన ఎరువు వేసే ముందు, మట్టి పరీక్ష చేయించి నిర్ధారించుకోండి.",
+    "hi": "यह आपके जवाबों के आधार पर एक अनुमान है, प्रयोगशाला परिणाम नहीं -- मिट्टी सुधारने से पहले, खासकर कोई रासायनिक खाद डालने से पहले, मिट्टी की जांच करवाकर पुष्टि करें।",
+    "kn": None, "ta": None,
+}
+
+
+def _tr(text_dict: dict, lang: str) -> str:
+    """Small shared lookup: `text_dict[lang]` if populated, else English fallback (TODO-mark pattern used throughout this app)."""
+    return (text_dict.get(lang) if text_dict.get(lang) else None) or text_dict["en"]
+
+
+def _kb_entry_exists(domain: str, candidate_id: str) -> bool:
+    if domain == "pest":
+        return _get_kb_entry(candidate_id) is not None
+    return candidate_id in _CHILLI_KB.get("deficiencies", {})
+
+
+def _build_kb_treatment_block(domain: str, leader: str, lang: str) -> str:
+    """
+    Renders the organic/chemical treatment section DIRECTLY from
+    chilli_kb.json -- this text never passes through Groq, so it is
+    verbatim by construction rather than by prompt instruction alone. This
+    is the hard-rule enforcement point for "the final diagnosis and ALL
+    treatment/dosage content must still resolve to a chilli_kb.json entry...
+    dosages are KB-verbatim only." If the KB entry has no organic/chemical
+    text recorded (a real data gap in chilli_kb.json for many entries --
+    see the project's prior KB-completeness notes), this returns an honest
+    "not documented, consult KVK" message rather than ever inventing one.
+    """
+    if domain == "pest":
+        entry = _get_kb_entry(leader)
+    else:
+        entry = _CHILLI_KB.get("deficiencies", {}).get(leader)
+    mgmt = (entry or {}).get("management") or {}
+    organic = mgmt.get("organic")
+    chemical = mgmt.get("chemical")
+
+    if not organic and not chemical:
+        return "\n\n" + _tr(_TREATMENT_BLOCK_TEXT["no_data"], lang)
+
+    parts = []
+    if organic:
+        parts.append(f"\n\n{_tr(_TREATMENT_BLOCK_TEXT['organic_heading'], lang)}\n{organic}")
+    if chemical:
+        parts.append(f"\n\n{_tr(_TREATMENT_BLOCK_TEXT['chemical_heading'], lang)}\n{chemical}")
+    return "".join(parts)
+
+
+_NO_KB_MATCH_TEXT = {
+    "en": "We couldn't narrow this down to a confirmed match in our reference. Please show this photo and describe the symptoms to your local Krishi Vigyan Kendra (KVK) or agriculture officer for a proper diagnosis.",
+    "te": "దీన్ని మా రెఫరెన్స్‌లో నిర్ధారిత మ్యాచ్‌గా తేల్చలేకపోయాము. సరైన నిర్ధారణ కోసం దయచేసి ఈ ఫోటోను చూపించి, లక్షణాలను మీ స్థానిక కృషి విజ్ఞాన కేంద్రం (KVK) లేదా వ్యవసాయ అధికారికి వివరించండి.",
+    "hi": "हम इसे अपने संदर्भ में किसी पुष्ट मिलान तक सीमित नहीं कर सके। सही निदान के लिए कृपया यह फोटो दिखाएं और लक्षण अपने नज़दीकी कृषि विज्ञान केंद्र (KVK) या कृषि अधिकारी को बताएं।",
+    "kn": None, "ta": None,
+}
+
+
+def _no_kb_match_response(lang: str):
+    """
+    Used when triage stops but NEITHER Groq's resolution NOR the
+    deterministic score-leader names a candidate with an actual
+    chilli_kb.json entry (e.g. only cercospora_leaf_spot is left, which has
+    no KB entry by design -- see _CORE_CLASS_TO_KB's comment). Shows an
+    honest "consult local expert" message instead of ever building a card
+    with invented or missing content. No case is created since there is no
+    resolved diagnosis to track an outcome against.
+    """
+    text = _tr(_NO_KB_MATCH_TEXT, lang)
+
+    def _gen():
+        yield f"data: {json.dumps({'type': 'meta', 'detection': None, 'low_confidence': True, 'case_id': None}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'text', 'text': text}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return Response(
+        stream_with_context(_gen()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── Dynamic (Groq-authored) triage: question generation + resolution ────────
+# Groq drives the CONVERSATION here -- it never drives the FACTS. Every id it
+# returns (in a question's favors/against tags, or as a final resolved_id)
+# is validated against the live candidate set before being trusted; anything
+# else is rejected and the caller falls back to the static
+# knowledge/triage_rules.json engine (questions) or the deterministic
+# score-leader (resolution). See the "STRICT SEPARATION" comment above
+# _TRIAGE_CARD_SYSTEM_PROMPT for the full design rationale.
+_GROQ_TRIAGE_TIMEOUT_S   = 20.0
+_GROQ_TRIAGE_MAX_RETRIES = 1  # best-effort: fail fast to the static fallback rather than hold up the farmer
+
+
+def _kb_symptom_context_for_candidates(domain: str, candidate_ids) -> dict:
+    """
+    Returns {candidate_id: key_symptoms_text} for every candidate that has a
+    resolvable chilli_kb.json entry with symptom text. Candidates with no KB
+    entry (e.g. cercospora_leaf_spot -- see _CORE_CLASS_TO_KB's comment) are
+    silently excluded from what's offered to Groq, since there is no sourced
+    symptom text to ground a question in -- they remain valid scoring
+    candidates elsewhere, just not ones Groq is asked to write about.
+    """
+    out = {}
+    for cid in candidate_ids:
+        entry = _get_kb_entry(cid) if domain == "pest" else _CHILLI_KB.get("deficiencies", {}).get(cid)
+        if entry and entry.get("key_symptoms"):
+            out[cid] = entry["key_symptoms"]
+    return out
+
+
+def _groq_json_call(messages: list, timeout_s: float = _GROQ_TRIAGE_TIMEOUT_S,
+                     max_retries: int = _GROQ_TRIAGE_MAX_RETRIES):
+    """
+    Non-streaming Groq call constrained to strict JSON output
+    (response_format=json_object), reusing the app's existing
+    timeout+retry wrapper. Returns the parsed dict, or None on ANY failure
+    (timeout, API error, invalid JSON). Never raises -- callers MUST treat
+    None as "dynamic generation unavailable this turn, fall back to the
+    static path" per the graceful-degradation requirement.
+    """
+    def _call():
+        return get_client().chat.completions.create(
+            model=MODEL, messages=messages, max_tokens=MAX_TOKENS,
+            temperature=0.3, timeout=timeout_s,
+            response_format={"type": "json_object"},
+        )
+    try:
+        response = _retry_with_backoff(_call, max_retries=max_retries, what="groq_dynamic_triage")
+        return json.loads(response.choices[0].message.content)
+    except Exception as exc:
+        log.warning("groq_dynamic_triage_fail", extra={"data": {"error": str(exc)}})
+        return None
+
+
+def _groq_generate_question(domain: str, candidates: dict, asked_question_texts: list, lang: str):
+    """
+    Asks Groq to author ONE plain-language discriminating question (+2-4 tap
+    options) for the CURRENT live candidate set, grounded ONLY in the
+    key_symptoms text pulled from chilli_kb.json for those candidates --
+    Groq is given no other agronomy facts and is explicitly told not to
+    introduce any candidate/symptom outside what's provided.
+
+    Returns a question dict in the SAME shape triage.py's static rulebook
+    questions use ({"id", "question", "options":[{"key","label","scores"}]})
+    so it flows through the existing triage.apply_answer/check_resolution
+    machinery unchanged regardless of whether it was Groq-authored or pulled
+    from knowledge/triage_rules.json. Returns None on any failure or
+    malformed/under-specified response -- the caller must fall back to
+    triage.pick_next_question (static).
+    """
+    live = triage._alive_candidates(candidates, triage.resolve_margin()) or set(candidates.keys())
+    symptom_map = _kb_symptom_context_for_candidates(domain, live)
+    if len(symptom_map) < 2:
+        return None  # nothing groundable to discriminate between -- let the static/ambiguous path handle it
+
+    candidate_lines = "\n".join(f"- {cid}: {sym}" for cid, sym in symptom_map.items())
+    asked_lines = "\n".join(f"- {q}" for q in asked_question_texts) or "(none yet)"
+
+    prompt = (
+        "You are helping a chilli farmer figure out which of these specific possibilities matches what "
+        "they're seeing, by asking ONE simple question.\n\n"
+        f"POSSIBILITIES (use ONLY these ids, do not mention anything else):\n{candidate_lines}\n\n"
+        f"Questions already asked this conversation (do not repeat):\n{asked_lines}\n\n"
+        "Write ONE new plain-language question -- a farmer with little reading ability should understand "
+        "it instantly -- that best splits these possibilities apart, using ONLY the symptom differences "
+        "given above. Give 2-4 short tap-able answer options. For each option, list which of the "
+        "possibility ids above it SUPPORTS (favors) and which it RULES OUT (against) -- only use ids from "
+        "the list above, never invent a new one. Provide the question and option labels in English, "
+        "Telugu, and Hindi.\n\n"
+        "Respond with STRICT JSON only, no other text, in this exact shape:\n"
+        '{"question": {"en": "...", "te": "...", "hi": "..."}, '
+        '"options": [{"key": "short_key", "label": {"en": "...", "te": "...", "hi": "..."}, '
+        '"favors": ["id1"], "against": ["id2"]}, ...]}'
+    )
+    messages = [
+        {"role": "system", "content": (
+            "You generate farmer-facing diagnostic questions for a chilli-pest assistant. You never invent "
+            "agronomy facts or mention a possibility not given to you -- you only use the symptom text "
+            "provided. Always respond with valid JSON only, no markdown fences, no extra commentary."
+        )},
+        {"role": "user", "content": prompt},
+    ]
+    data = _groq_json_call(messages)
+    if not data:
+        return None
+
+    try:
+        q_text = data.get("question")
+        options_raw = data.get("options")
+        if not isinstance(q_text, dict) or not q_text.get("en") or not isinstance(options_raw, list):
+            return None
+
+        options = []
+        for opt in options_raw:
+            if not isinstance(opt, dict):
+                continue
+            key = str(opt.get("key", "")).strip()
+            label = opt.get("label")
+            if not key or not isinstance(label, dict) or not label.get("en"):
+                continue
+            favors  = [c for c in (opt.get("favors") or [])  if isinstance(c, str) and c in live]
+            against = [c for c in (opt.get("against") or []) if isinstance(c, str) and c in live]
+            scores = {}
+            for c in favors:
+                scores[c] = scores.get(c, 0.0) + 12.0
+            for c in against:
+                scores[c] = scores.get(c, 0.0) - 10.0
+            options.append({"key": key, "label": label, "scores": scores})
+
+        if len(options) < 2:
+            return None  # too thin/malformed to be a useful question -- fall back instead of showing it
+
+        return {
+            "id":          f"dyn_{uuid.uuid4().hex[:8]}",
+            "question":    q_text,
+            "options":     options,
+            "applies_to":  list(live),
+            "dynamic":     True,
+        }
+    except (TypeError, ValueError, AttributeError) as exc:
+        log.warning("groq_dynamic_question_malformed", extra={"data": {"error": str(exc)}})
+        return None
+
+
+def _groq_resolve_diagnosis(domain: str, candidates: dict, qa_transcript: list, lang: str):
+    """
+    Asks Groq to pick the single BEST-MATCHING candidate from `candidates`
+    given the full question/answer transcript, grounded only in the
+    key_symptoms already associated with those candidates. The returned id
+    is hard-validated against the candidate set (which is itself always
+    drawn from triage.PEST_CANDIDATE_IDS/DEFICIENCY_CANDIDATE_IDS) -- if
+    Groq returns anything else (or times out, or sends malformed JSON),
+    this returns None and the caller MUST fall back to the deterministic
+    score-leader with `ambiguous=True` rather than ever showing an invented
+    diagnosis. This is the explicit "if Groq returns anything not in the KB,
+    reject" requirement.
+    """
+    symptom_map = _kb_symptom_context_for_candidates(domain, candidates.keys())
+    if not symptom_map:
+        return None
+
+    candidate_lines = "\n".join(f"- {cid}: {sym}" for cid, sym in symptom_map.items())
+    qa_lines = "\n".join(f"Q: {q}\nA: {a}" for q, a in qa_transcript) or "(no questions were answered)"
+
+    prompt = (
+        "A chilli farmer was asked some questions to figure out which of these specific possibilities "
+        "matches their plant.\n\n"
+        f"POSSIBILITIES (pick ONLY from these ids, never invent a new one):\n{candidate_lines}\n\n"
+        f"CONVERSATION:\n{qa_lines}\n\n"
+        "Based on the conversation and the symptom descriptions above, which single possibility id best "
+        "matches? If the conversation doesn't clearly point to one, say so honestly rather than guessing "
+        "confidently.\n\n"
+        "Respond with STRICT JSON only: "
+        '{"resolved_id": "<one of the ids above, or null if unclear>", "confidence": "high" or "low", '
+        '"reasoning": "<one short sentence>"}'
+    )
+    messages = [
+        {"role": "system", "content": (
+            "You resolve a farmer diagnostic conversation to one of a fixed set of possibility ids. You "
+            "never pick or invent an id outside the list given. Always respond with valid JSON only, no "
+            "markdown fences, no extra commentary."
+        )},
+        {"role": "user", "content": prompt},
+    ]
+    data = _groq_json_call(messages)
+    if not data:
+        return None
+    try:
+        resolved_id = data.get("resolved_id")
+        confidence  = data.get("confidence", "low")
+        if resolved_id not in symptom_map:  # hard validation gate -- the actual KB-governance check
+            if resolved_id is not None:
+                log.warning("groq_resolved_id_rejected", extra={"data": {"resolved_id": resolved_id}})
+            return None
+        return {"leader": resolved_id, "ambiguous": confidence != "high"}
+    except (AttributeError, TypeError) as exc:
+        log.warning("groq_resolve_malformed", extra={"data": {"error": str(exc)}})
+        return None
+
+
 def _triage_ask_payload(domain: str, candidates: dict, asked: list, lang: str, user_msg: str,
-                         morphology: dict | None = None):
+                         morphology: dict | None = None, qa_transcript: list | None = None):
     """
     Returns a JSON-serializable {"triage": {...}} payload carrying the next
-    question to ask, or None if no curated question in knowledge/triage_rules.json
-    applies to the current candidate set (caller should then treat this as
-    resolved/ambiguous rather than asking a question the rulebook can't ground).
+    question to ask, or None if NEITHER the dynamic Groq path NOR the static
+    knowledge/triage_rules.json rulebook has a question for the current
+    candidate set (caller should then treat this as resolved/ambiguous).
+
+    Primary path: _groq_generate_question authors the question live, grounded
+    only in the KB symptom text for the current candidates. Fallback path
+    (Groq unavailable/timeout/malformed/rejected): triage.pick_next_question,
+    the original static rulebook engine -- this is the graceful-degradation
+    guarantee, not a secondary feature. Either way the returned question dict
+    has the SAME shape, so triage.apply_answer/check_resolution work
+    identically regardless of origin.
     """
-    q = triage.pick_next_question(domain, candidates, asked)
+    qa_transcript = qa_transcript or []
+    asked_question_texts = [q_text for q_text, _ in qa_transcript]
+
+    q = _groq_generate_question(domain, candidates, asked_question_texts, lang)
+    if q is None:
+        q = triage.pick_next_question(domain, candidates, asked)
     if q is None:
         return None
+
     return {
         "triage": {
             "question_id": q["id"],
@@ -2284,12 +2659,14 @@ def _triage_ask_payload(domain: str, candidates: dict, asked: list, lang: str, u
                 for o in q["options"]
             ],
             "state": {
-                "domain": domain,
-                "candidates": candidates,
-                "asked": asked,
-                "lang": lang,
-                "user_msg": user_msg,
-                "morphology": morphology,
+                "domain":        domain,
+                "candidates":    candidates,
+                "asked":         asked,
+                "lang":          lang,
+                "user_msg":      user_msg,
+                "morphology":    morphology,
+                "last_question": q,             # full object -- dynamic ids aren't in triage_rules.json
+                "qa_transcript": qa_transcript,  # for _groq_resolve_diagnosis once triage stops
             },
         }
     }
@@ -2297,13 +2674,26 @@ def _triage_ask_payload(domain: str, candidates: dict, asked: list, lang: str, u
 
 def _triage_resolved_response(domain: str, leader: str, ambiguous: bool, lang: str,
                                user_msg: str, history: list, morphology: dict | None = None):
-    """Builds the final SSE response once triage has resolved (or exhausted its question budget)."""
+    """
+    Builds the final SSE response once triage has resolved (or exhausted its
+    question budget). Groq writes ONLY the Type/Name + Cause text
+    (_compile_triage_card_prompt); the treatment/dosage block is rendered
+    directly from chilli_kb.json by _build_kb_treatment_block and appended
+    by _groq_stream_generator itself -- never generated by the LLM. For
+    domain="deficiency" the soil-test reminder is likewise appended
+    server-side (verbatim, not LLM-phrased) rather than trusted to a prompt
+    instruction.
+    """
     system_content = strip_cross_contamination(_TRIAGE_CARD_SYSTEM_PROMPT, lang)
     system_content += _LANG_INSTRUCTION_MAP.get(lang, "\nIMPORTANT: You must respond in English.")
     system_content = strip_cross_contamination(system_content, lang)
     triage_context = _compile_triage_card_prompt(domain, leader, ambiguous, lang, user_msg)
 
     messages = [{"role": "system", "content": system_content}] + history + [{"role": "user", "content": triage_context}]
+
+    kb_treatment_block = _build_kb_treatment_block(domain, leader, lang)
+    if domain == "deficiency":
+        kb_treatment_block += "\n\n" + _tr(_SOIL_TEST_REMINDER, lang)
 
     detection = None
     if domain == "pest":
@@ -2321,7 +2711,9 @@ def _triage_resolved_response(domain: str, leader: str, ambiguous: bool, lang: s
     case_id = _create_case(domain, leader, lang)
 
     return Response(
-        stream_with_context(_groq_stream_generator(messages, detection, ambiguous, lang, case_id=case_id)),
+        stream_with_context(_groq_stream_generator(
+            messages, detection, ambiguous, lang, case_id=case_id, kb_treatment_block=kb_treatment_block
+        )),
         mimetype="text/event-stream",
         headers={
             "Cache-Control":     "no-cache",

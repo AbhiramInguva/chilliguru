@@ -245,6 +245,38 @@ officer before use) and the data notice; the same disclaimer is appended
 server-side to any `/chat` or `/detect` reply that mentions chemical
 treatment.
 
+## Vision-guided adaptive triage (dynamic, Groq-driven questions)
+
+When vision is low-confidence/torn between a lookalike cluster, or reports
+"Healthy" but the farmer describes a problem, the app asks follow-up
+questions one at a time instead of showing a generic list. As of this
+revision, those questions are authored LIVE by Groq (`app.py`'s
+`_groq_generate_question`), not just pulled from a fixed file — but the
+split between "conversation" and "facts" is strict:
+
+- **Groq writes the conversation**: question text/options, and (after the
+  farmer answers) the final pick of which candidate best matches
+  (`_groq_resolve_diagnosis`). It is given ONLY the `key_symptoms` text
+  already in `knowledge/chilli_kb.json` for the live candidate set and is
+  explicitly told never to introduce a candidate or symptom outside that.
+- **The KB governs the facts**: every id Groq returns is validated against
+  the candidate set; anything else is rejected, not trusted. The resolved
+  card's Type/Name + Cause are Groq-phrased (grounded in the KB entry), but
+  the **treatment/dosage text is never passed through Groq at all** —
+  `_build_kb_treatment_block` renders it directly from `chilli_kb.json` and
+  it's appended to the SSE stream server-side, verbatim by construction.
+- **Graceful degradation**: `knowledge/triage_rules.json` (via `triage.py`)
+  remains the fallback question source if Groq is unavailable, times out, or
+  returns something malformed/out-of-set; the deterministic candidate-score
+  leader is likewise the fallback diagnosis if `_groq_resolve_diagnosis` is
+  unavailable or rejected. Either path produces the same question/state
+  shape, so the rest of the `/detect` ↔ `/detect/triage-answer` loop doesn't
+  need to know which one fired.
+- If neither Groq's pick nor the deterministic leader has an actual KB entry
+  to resolve to (e.g. `cercospora_leaf_spot`, which has no KB entry by
+  design), the app shows a "couldn't confirm — consult your local KVK" message
+  rather than ever building a card with invented content.
+
 ## Outcome tracking (farmer-initiated, first version)
 
 After a diagnosis (a pest/disease card, or a triage-resolved deficiency —
