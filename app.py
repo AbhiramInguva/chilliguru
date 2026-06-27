@@ -1759,16 +1759,34 @@ def detect_triage_answer():
             a_text = (chosen_opt["label"].get(lang) or chosen_opt["label"].get("en", "")) if chosen_opt else answer_key
             qa_transcript.append([q_text, a_text])
 
+        # ── All-unsure safety net ─────────────────────────────────────────
+        # If EVERY answer so far was "Not sure / skip" (no scores ever
+        # moved), we can't separate candidates at all.  Rather than forcing
+        # a guess, recommend the farmer consult a local expert.
+        answer_keys_so_far = [state.get("answer_keys", []), [answer_key]] if answer_key else [state.get("answer_keys", [])]
+        all_keys = [k for sublist in answer_keys_so_far for k in (sublist if isinstance(sublist, list) else [sublist]) if k]
+        state_answer_keys = all_keys  # will be threaded through in state below
+
         resolution = triage.check_resolution(domain, candidates, len(asked))
 
         if not resolution["resolved"]:
             ask = _triage_ask_payload(domain, candidates, asked, lang, user_msg,
                                        morphology=morphology, qa_transcript=qa_transcript)
             if ask is not None:
+                # Thread the answer_keys list through state so the all-unsure
+                # check works across round-trips.
+                ask["triage"]["state"]["answer_keys"] = state_answer_keys
                 return jsonify(ask)
             # Neither Groq nor the rulebook has a further question —
             # resolve now with whoever currently leads (ambiguous fallback).
             resolution = {"resolved": True, "leader": resolution["leader"], "ambiguous": True}
+
+        # If every single answer was "not_sure", no scores moved at all —
+        # candidates can't be separated.  Show KVK referral instead of
+        # forcing a confident pick from non-answers.
+        if state_answer_keys and all(k == "not_sure" for k in state_answer_keys):
+            log.info("triage_all_unsure", extra={"data": {"domain": domain, "questions_asked": len(asked)}})
+            return _no_kb_match_response_with_text(_ALL_UNSURE_TEXT, lang)
 
         # ── Authoritative resolution: Groq picks from the candidate set, the
         # deterministic score-leader is the fallback if Groq is unavailable
@@ -2394,12 +2412,46 @@ def _build_kb_treatment_block(domain: str, leader: str, lang: str) -> str:
     return "".join(parts)
 
 
+# "Not sure / skip" option appended to EVERY triage question (Groq-authored and
+# static fallback). Scores={} means answering this changes NOTHING in the
+# candidate ranking — the question is simply skipped.
+_NOT_SURE_SKIP_LABELS = {
+    "en": "Not sure / skip",
+    "te": "తెలియదు / దాటవేయండి",
+    "hi": "पता नहीं / छोड़ दें",
+    "kn": None,   # TODO: Kannada translation
+    "ta": None,   # TODO: Tamil translation
+}
+
+_ALL_UNSURE_TEXT = {
+    "en": "We were unable to narrow this down because there weren't enough details to separate the possibilities. Please show this photo and describe the symptoms to your local Krishi Vigyan Kendra (KVK) or agriculture officer for a proper on-the-ground diagnosis.",
+    "te": "తగినంత వివరాలు లేనందున ఈ సమస్యను నిర్ధారించలేకపోయాము. సరైన నిర్ధారణ కోసం దయచేసి ఈ ఫోటోను చూపించి, లక్షణాలను మీ స్థానిక కృషి విజ్ఞాన కేంద్రం (KVK) లేదా వ్యవసాయ అధికారికి వివరించండి.",
+    "hi": "पर्याप्त जानकारी न मिलने के कारण हम इसे सीमित नहीं कर सके। सही निदान के लिए कृपया यह फोटो दिखाएं और लक्षण अपने नज़दीकी कृषि विज्ञान केंद्र (KVK) या कृषि अधिकारी को बताएं।",
+    "kn": None, "ta": None,   # TODO: kn/ta translations
+}
+
 _NO_KB_MATCH_TEXT = {
     "en": "We couldn't narrow this down to a confirmed match in our reference. Please show this photo and describe the symptoms to your local Krishi Vigyan Kendra (KVK) or agriculture officer for a proper diagnosis.",
     "te": "దీన్ని మా రెఫరెన్స్‌లో నిర్ధారిత మ్యాచ్‌గా తేల్చలేకపోయాము. సరైన నిర్ధారణ కోసం దయచేసి ఈ ఫోటోను చూపించి, లక్షణాలను మీ స్థానిక కృషి విజ్ఞాన కేంద్రం (KVK) లేదా వ్యవసాయ అధికారికి వివరించండి.",
     "hi": "हम इसे अपने संदर्भ में किसी पुष्ट मिलान तक सीमित नहीं कर सके। सही निदान के लिए कृपया यह फोटो दिखाएं और लक्षण अपने नज़दीकी कृषि विज्ञान केंद्र (KVK) या कृषि अधिकारी को बताएं।",
     "kn": None, "ta": None,
 }
+
+
+def _no_kb_match_response_with_text(text_dict: dict, lang: str):
+    """Shared helper: returns an SSE response with a translated text message and no diagnosis card."""
+    text = _tr(text_dict, lang)
+
+    def _gen():
+        yield f"data: {json.dumps({'type': 'meta', 'detection': None, 'low_confidence': True, 'case_id': None}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'text', 'text': text}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return Response(
+        stream_with_context(_gen()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def _no_kb_match_response(lang: str):
@@ -2412,18 +2464,7 @@ def _no_kb_match_response(lang: str):
     with invented or missing content. No case is created since there is no
     resolved diagnosis to track an outcome against.
     """
-    text = _tr(_NO_KB_MATCH_TEXT, lang)
-
-    def _gen():
-        yield f"data: {json.dumps({'type': 'meta', 'detection': None, 'low_confidence': True, 'case_id': None}, ensure_ascii=False)}\n\n"
-        yield f"data: {json.dumps({'type': 'text', 'text': text}, ensure_ascii=False)}\n\n"
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-    return Response(
-        stream_with_context(_gen()),
-        mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return _no_kb_match_response_with_text(_NO_KB_MATCH_TEXT, lang)
 
 
 # ── Dynamic (Groq-authored) triage: question generation + resolution ────────
@@ -2557,6 +2598,12 @@ def _groq_generate_question(domain: str, candidates: dict, asked_question_texts:
         if len(options) < 2:
             return None  # too thin/malformed to be a useful question -- fall back instead of showing it
 
+        # Always append a "Not sure / skip" option so the farmer is never
+        # forced to guess.  Empty scores dict means it changes nothing in
+        # the candidate ranking — the question is simply skipped.
+        if not any(o["key"] == "not_sure" for o in options):
+            options.append({"key": "not_sure", "label": dict(_NOT_SURE_SKIP_LABELS), "scores": {}})
+
         return {
             "id":          f"dyn_{uuid.uuid4().hex[:8]}",
             "question":    q_text,
@@ -2655,7 +2702,11 @@ def _triage_ask_payload(domain: str, candidates: dict, asked: list, lang: str, u
             "question_id": q["id"],
             "question": q["question"].get(lang) or q["question"]["en"],
             "options": [
-                {"key": o["key"], "label": o["label"].get(lang) or o["label"]["en"]}
+                {
+                    "key":   o["key"],
+                    "label": o["label"].get(lang) or o["label"]["en"],
+                    "skip":  o["key"] == "not_sure",   # UI flag: render with lower emphasis
+                }
                 for o in q["options"]
             ],
             "state": {

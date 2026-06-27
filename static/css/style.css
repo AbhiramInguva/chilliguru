@@ -305,6 +305,23 @@ header {
   cursor: default;
 }
 
+/* "Not sure / skip" — lower-emphasis so it doesn't look like a real symptom answer */
+.triage-option-skip {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ink-400);
+  border-style: dashed;
+  border-color: var(--ink-100);
+  background: transparent;
+  opacity: 0.85;
+}
+
+.triage-option-skip:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: var(--ink-200);
+  color: var(--ink-500);
+}
+
 /* Outcome-tracking — "save this case" card shown after every diagnosis */
 .case-save-card {
   display: flex;

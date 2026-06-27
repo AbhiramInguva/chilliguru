@@ -605,7 +605,7 @@
     triagePayload.options.forEach(opt => {
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'triage-option-btn';
+      btn.className = opt.skip ? 'triage-option-btn triage-option-skip' : 'triage-option-btn';
       btn.textContent = opt.label;
       btn.onclick = () => answerTriageQuestion(triagePayload, opt, userText, optionsWrap);
       optionsWrap.appendChild(btn);

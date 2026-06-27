@@ -143,6 +143,7 @@
       "key_symptoms": "Both nymphs and adults lacerate leaf tissues and suck the oozing sap, sometimes attacking buds and flowers too. Generally attack tender leaves and growing shoots; rarely the older leaves. Damage results in curling of leaves UPWARD, crumbling and shedding of infested buds which turn brittle with the petiole becoming brown and dropping down. Affected fruits show light brown scars. Infestation is severe in dry weather; damage ranges 30-50%.",
       "causal_agent": "Scirtothrips dorsalis, Caliothrips indicus, Frankliniella sulphurea",
       "management": {
+        "_todo": "THRIPS TREATMENT NEEDED — the reference doc (chilli_reference.txt) lists NO management section for thrips; the dosed spray list (spiromesifen etc.) on lines 158-161 is under MITES, not thrips. A thrips-specific treatment must be sourced from a verified agronomic reference before it can be added here. DO NOT fabricate.",
         "organic": null,
         "chemical": null
       }
