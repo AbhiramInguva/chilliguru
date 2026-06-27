@@ -2881,15 +2881,23 @@ def _detect_inner():
                 return jsonify(ask)
 
         pest_candidates = triage.build_pest_candidates(result, to_core_class) if isinstance(result, dict) else {}
-        if len(pest_candidates) >= 2 and triage.is_lookalike_or_low(result, pest_candidates):
+        if pest_candidates and triage.should_ask_pest_questions(result, pest_candidates):
+            # Single uncertain candidate carries nothing to discriminate against;
+            # expand it to its known visual-lookalike cluster so there's a real
+            # question to ask. The photo's own pick stays the favourite.
+            triage_candidates = triage.expand_to_cluster(pest_candidates)
             morphology = top.get("morphology") if isinstance(top, dict) else None
-            ask = _triage_ask_payload("pest", pest_candidates, [], lang, user_msg, morphology=morphology)
+            ask = _triage_ask_payload("pest", triage_candidates, [], lang, user_msg, morphology=morphology)
             if ask is not None:
                 if image_bytes:
                     label = top.get("raw_label") if isinstance(top, dict) else "unknown"
                     confidence = top.get("confidence", 0) if isinstance(top, dict) else 0
                     _trigger_shadow_save(image_bytes, label=label, confidence=confidence, trigger="triage_ask")
-                log.info("triage_pest_start", extra={"data": {"candidates": list(pest_candidates.keys())}})
+                log.info("triage_pest_start", extra={"data": {
+                    "vision_candidates": list(pest_candidates.keys()),
+                    "triage_candidates": list(triage_candidates.keys()),
+                    "low_confidence":    result.get("low_confidence") if isinstance(result, dict) else None,
+                }})
                 return jsonify(ask)
 
         # ── Sub-module 3: Compile Groq payload ──────────────────────────────

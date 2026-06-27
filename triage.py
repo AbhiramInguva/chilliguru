@@ -39,6 +39,37 @@ DEFICIENCY_CANDIDATE_IDS = {
 DEFICIENCY_SEED_SCORE = 50.0
 LOOKALIKE_MARGIN = 15.0  # percentage points -- mirrors model_info.json's margin_threshold (0.15)
 
+# A genuinely "skip the questions, show the card" result needs BOTH a high top-1
+# confidence AND no close runner-up. These two gates are what separate the
+# high-confidence-single case (skip) from everything else (ask). HIGH_CONF_SKIP
+# is intentionally below a perfect score: a real clear detection clears it
+# easily, while a hesitant 50-65% single detection (which the detector may not
+# always flag as low_confidence) still falls into "ask".
+HIGH_CONF_SKIP = 70.0   # top-1 must clear this to even be eligible to skip questions
+
+# Known visual-lookalike clusters, grounded in the shared `applies_to` groupings
+# of knowledge/triage_rules.json (which are themselves sourced from chilli_kb.json
+# symptoms). Used to EXPAND a single uncertain candidate into the small set of
+# things it's realistically confusable with, so there is something concrete to
+# ask a discriminating question about. The photo's own pick stays the favourite
+# (see expand_to_cluster) -- the cluster only gives the question something to
+# split. cercospora_leaf_spot is included as a confusable but has no KB entry,
+# which the resolution layer already handles (falls back to "consult local KVK").
+LOOKALIKE_CLUSTERS = {
+    "yellow_thrips":         {"yellow_thrips", "invasive_black_thrips", "broad_mites", "leaf_curl_virus"},
+    "invasive_black_thrips": {"yellow_thrips", "invasive_black_thrips", "broad_mites", "leaf_curl_virus"},
+    "broad_mites":           {"yellow_thrips", "invasive_black_thrips", "broad_mites", "leaf_curl_virus"},
+    "leaf_curl_virus":       {"yellow_thrips", "invasive_black_thrips", "broad_mites", "leaf_curl_virus"},
+    "aphids":                {"aphids", "whitefly_leaf_damage", "mealybugs"},
+    "whitefly_leaf_damage":  {"aphids", "whitefly_leaf_damage", "mealybugs"},
+    "mealybugs":             {"aphids", "whitefly_leaf_damage", "mealybugs"},
+    "powdery_mildew":        {"powdery_mildew", "bacterial_leaf_spot", "cercospora_leaf_spot"},
+    "bacterial_leaf_spot":   {"powdery_mildew", "bacterial_leaf_spot", "cercospora_leaf_spot"},
+    "cercospora_leaf_spot":  {"powdery_mildew", "bacterial_leaf_spot", "cercospora_leaf_spot"},
+    "fruit_borer":           {"fruit_borer", "tobacco_caterpillar"},
+    "tobacco_caterpillar":   {"fruit_borer", "tobacco_caterpillar"},
+}
+
 _rules_cache = None
 
 
@@ -90,14 +121,78 @@ def is_lookalike_or_low(result, candidates):
     candidates are within LOOKALIKE_MARGIN of each other (a "lookalike
     cluster" rather than a single clear winner). Both signals are read from
     existing detector.py/model_info.json values -- no new threshold invented.
+
+    NOTE: kept for backward compatibility, but the /detect branch now uses
+    should_ask_pest_questions() below, which also fires for a SINGLE
+    low-confidence candidate (this function's margin check needs >=2).
     """
-    if isinstance(result, dict) and result.get("low_confidence"):
+    if isinstance(result, dict) and (result.get("low_confidence") or result.get("is_low_confidence")):
         return True
     if len(candidates) >= 2:
         ranked = sorted(candidates.values(), reverse=True)
         if ranked[0] - ranked[1] < LOOKALIKE_MARGIN:
             return True
     return False
+
+
+def should_ask_pest_questions(result, candidates):
+    """
+    Decides whether /detect should run the adaptive triage Q&A instead of
+    showing the card directly. This is the corrected branch gate -- the old
+    `len(candidates) >= 2 and is_lookalike_or_low(...)` condition could never
+    fire for a single-candidate result (the HF primary detector's normal
+    output), so a low-confidence single detection silently skipped questions.
+
+    Ask questions when ANY of these hold:
+      - the detector flagged the result low_confidence / is_low_confidence, OR
+      - the top-1 confidence is below HIGH_CONF_SKIP (not "genuinely high"), OR
+      - there are >=2 candidates and the top-1 -> top-2 margin is within
+        LOOKALIKE_MARGIN (a close lookalike cluster).
+
+    Skip (show card directly) ONLY when there is a clear top-1 that clears
+    HIGH_CONF_SKIP with no close runner-up. Uses the real top1-minus-top2
+    margin, never top-1 alone, so an inflated/overconfident single score
+    can't by itself force a skip past a genuine competing candidate.
+    """
+    if not candidates:
+        return False
+    if isinstance(result, dict) and (result.get("low_confidence") or result.get("is_low_confidence")):
+        return True
+    ranked = sorted(candidates.values(), reverse=True)
+    top1 = ranked[0]
+    if top1 < HIGH_CONF_SKIP:
+        return True
+    if len(ranked) >= 2 and (top1 - ranked[1]) < LOOKALIKE_MARGIN:
+        return True
+    return False
+
+
+def expand_to_cluster(candidates):
+    """
+    If the live candidate set is too small to discriminate between (the common
+    case: the detector returned a single confident-looking-but-uncertain
+    label), add the known visual-lookalike cluster members for the current top
+    candidate so there is something concrete to ask a question about. The
+    photo's own pick stays the favourite -- added members are seeded BELOW the
+    lowest vision score (but close enough to stay "alive" within resolve_margin)
+    so "the photo proposes, the answer disposes". Returns a NEW dict; never
+    mutates the input. If the top candidate has no known cluster, returns the
+    candidates unchanged.
+    """
+    if not candidates:
+        return dict(candidates)
+    expanded = dict(candidates)
+    top = max(candidates, key=candidates.get)
+    cluster = LOOKALIKE_CLUSTERS.get(top)
+    if not cluster:
+        return expanded
+    # Seed just under the lowest existing score, within resolve_margin so the
+    # selection engine treats the whole cluster as live and asks a question.
+    seed = max(0.0, min(candidates.values()) - (resolve_margin() * 0.5))
+    for cid in cluster:
+        if cid in PEST_CANDIDATE_IDS and cid not in expanded:
+            expanded[cid] = seed
+    return expanded
 
 
 # ── Branch (c): deficiency trigger (vision bias only, never a specific id) ───
