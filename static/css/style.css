@@ -759,48 +759,6 @@ header {
 
 .image-preview.show { display: flex; flex-wrap: wrap; }
 
-/* ── Field MCQ questions (improve detection accuracy) ────────────────────── */
-.field-mcq {
-  flex-basis: 100%;
-  width: 100%;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--e-200);
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 12px;
-}
-.field-mcq-title {
-  grid-column: 1 / -1;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--e-700);
-  opacity: 0.9;
-}
-.field-q {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--e-800);
-}
-.field-q select {
-  font-size: 13px;
-  padding: 7px 9px;
-  border: 1px solid var(--e-200);
-  border-radius: 9px;
-  background: var(--white, #fff);
-  color: var(--e-800);
-  cursor: pointer;
-}
-.field-q select:focus {
-  outline: none;
-  border-color: var(--e-700);
-}
-@media (max-width: 560px) {
-  .field-mcq { grid-template-columns: 1fr; }
-}
 
 .preview-img {
   width: 44px;
